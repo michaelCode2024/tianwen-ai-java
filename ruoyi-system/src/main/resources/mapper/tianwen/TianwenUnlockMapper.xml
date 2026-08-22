@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC
+        "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.ruoyi.tianwen.mapper.TianwenUnlockMapper">
+
+    <resultMap id="UnlockMap" type="com.ruoyi.tianwen.domain.TianwenUnlock">
+        <id property="id" column="id"/>
+        <result property="userId" column="user_id"/>
+        <result property="recommendationId" column="recommendation_id"/>
+        <result property="unlockType" column="unlock_type"/>
+        <result property="amount" column="amount"/>
+    </resultMap>
+
+    <select id="selectOne" resultMap="UnlockMap">
+        SELECT id,
+               user_id,
+               recommendation_id,
+               unlock_type,
+               amount
+        FROM tw_h5_recommend_unlock
+        WHERE user_id = #{userId}
+          AND recommendation_id = #{recommendationId} LIMIT 1
+    </select>
+
+    <select id="selectUnlockedIds"
+            resultType="java.lang.String">
+        SELECT recommendation_id
+        FROM tw_h5_recommend_unlock
+        WHERE user_id = #{userId}
+    </select>
+
+    <insert id="insert"
+            parameterType="com.ruoyi.tianwen.domain.TianwenUnlock"
+            useGeneratedKeys="true"
+            keyProperty="id">
+        INSERT INTO tw_h5_recommend_unlock
+        (user_id,
+         recommendation_id,
+         unlock_type,
+         amount,
+         created_at)
+        VALUES (#{userId},
+                #{recommendationId},
+                #{unlockType},
+                #{amount},
+                NOW())
+    </insert>
+
+    <!--
+      核心：
+      UNIQUE(user_id,recommendation_id) + INSERT IGNORE
+      一次 SQL 同时完成“是否存在 + 插入”。
+    -->
+    <insert id="insertIgnore">
+        INSERT
+        IGNORE INTO tw_h5_recommend_unlock
+        (
+            user_id,
+            recommendation_id,
+            unlock_type,
+            amount,
+            created_at
+        )
+        VALUES
+        (
+        #{userId},
+        #{recommendationId},
+        #{unlockType},
+        #{amount},
+        NOW()
+        )
+    </insert>
+
+</mapper>

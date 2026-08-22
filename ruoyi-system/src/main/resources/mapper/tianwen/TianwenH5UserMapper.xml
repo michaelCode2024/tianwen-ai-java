@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ruoyi.tianwen.mapper.TianwenH5UserMapper">
+    <resultMap id="UserMap" type="com.ruoyi.tianwen.domain.TianwenH5User">
+        <id property="id" column="id"/>
+        <result property="phone" column="phone"/>
+        <result property="passwordHash" column="password_hash"/>
+        <result property="salt" column="salt"/>
+        <result property="balance" column="balance"/>
+        <result property="freeViewsRemaining" column="free_views_remaining"/>
+        <result property="vipLevel" column="vip_level"/>
+        <result property="vipStartAt" column="vip_start_at"/>
+        <result property="vipExpireAt" column="vip_expire_at"/>
+        <result property="createdAt" column="created_at"/>
+        <result property="updatedAt" column="updated_at"/>
+    </resultMap>
+
+    <select id="selectById" resultMap="UserMap">SELECT *
+                                                FROM tw_h5_user
+                                                WHERE id = #{id} LIMIT 1</select>
+
+    <select id="selectByPhone" resultMap="UserMap">SELECT *
+                                                   FROM tw_h5_user
+                                                   WHERE phone = #{phone} LIMIT 1</select>
+
+    <insert id="insert" parameterType="com.ruoyi.tianwen.domain.TianwenH5User" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO tw_h5_user(phone, password_hash, salt, balance, free_views_remaining, vip_level, vip_start_at,
+                               vip_expire_at, created_at, updated_at)
+        VALUES (#{phone}, #{passwordHash}, #{salt}, #{balance}, #{freeViewsRemaining}, COALESCE(#{vipLevel}, 0),
+                #{vipStartAt}, #{vipExpireAt}, NOW(), NOW())
+    </insert>
+
+    <update id="updatePassword">UPDATE tw_h5_user
+                                SET password_hash=#{passwordHash},
+                                    salt=#{salt},
+                                    updated_at=NOW()
+                                WHERE id = #{id}</update>
+
+    <update id="updateAsset">UPDATE tw_h5_user
+                             SET balance=#{balance},
+                                 free_views_remaining=#{freeViewsRemaining},
+                                 updated_at=NOW()
+                             WHERE id = #{id}</update>
+
+    <update id="addFreeViews">UPDATE tw_h5_user
+                              SET free_views_remaining=GREATEST(0, free_views_remaining + #{delta}),
+                                  updated_at=NOW()
+                              WHERE id = #{id}</update>
+
+    <update id="decrementFreeView">UPDATE tw_h5_user
+                                   SET free_views_remaining=free_views_remaining - 1,
+                                       updated_at=NOW()
+                                   WHERE id = #{id}
+                                     AND free_views_remaining &gt; 0</update>
+</mapper>

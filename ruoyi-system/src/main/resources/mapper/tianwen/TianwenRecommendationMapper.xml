@@ -1,0 +1,337 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC
+        "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.ruoyi.tianwen.mapper.TianwenRecommendationMapper">
+
+    <!--
+      H5 列表只返回卡片真正需要的数据。
+      不 JOIN t_leisu_schedule，不查 corn_score/asia_handicap/big_small 等详情字段。
+    -->
+    <sql id="FastSelect">
+        SELECT
+            r.id,
+            r.model,
+            r.match_id,
+            r.league_name,
+            DATE_FORMAT(r.match_time, '%Y-%m-%d %H:%i:%s') AS match_time,
+            r.home_team,
+            r.guest_team,
+            r.stage,
+            r.market,
+            r.direction,
+            r.handicap,
+            r.handicap AS display_handicap,
+            r.odds,
+            r.rate,
+            r.final_score,
+            COALESCE(r.recommend_role, 'primary') AS recommend_role,
+            r.result_status,
+            r.is_latest AS is_latest,
+            r.final_home_score,
+            r.final_guest_score,
+            DATE_FORMAT(r.create_time, '%Y-%m-%d %H:%i:%s') AS create_time,
+            DATE_FORMAT(r.update_time, '%Y-%m-%d %H:%i:%s') AS update_time
+        FROM football_ai_recommend_record r
+    </sql>
+
+    <!-- 详情页才 JOIN 比赛表 -->
+    <sql id="DetailSelect">
+        SELECT
+            r.id,
+            r.model,
+            r.match_id,
+            r.league_name,
+            DATE_FORMAT(r.match_time, '%Y-%m-%d %H:%i:%s') AS match_time,
+            r.home_team,
+            r.guest_team,
+            r.stage,
+            r.market,
+            r.direction,
+            r.handicap,
+            r.handicap AS display_handicap,
+            r.odds,
+            r.rate,
+            r.final_score,
+            COALESCE(r.recommend_role, 'primary') AS recommend_role,
+            r.recommend_home_score,
+            r.recommend_guest_score,
+            r.recommend_minute,
+            COALESCE(s.home_red, r.home_red, 0) AS home_red,
+            COALESCE(s.guess_red, r.guest_red, 0) AS guest_red,
+            r.result_status,
+            r.is_latest AS is_latest,
+            r.final_home_score,
+            r.final_guest_score,
+            DATE_FORMAT(r.settle_time, '%Y-%m-%d %H:%i:%s') AS settle_time,
+            DATE_FORMAT(r.obsolete_time, '%Y-%m-%d %H:%i:%s') AS obsolete_time,
+            DATE_FORMAT(r.create_time, '%Y-%m-%d %H:%i:%s') AS create_time,
+            DATE_FORMAT(r.update_time, '%Y-%m-%d %H:%i:%s') AS update_time,
+            s.match_status,
+            s.match_type,
+            s.match_score,
+            s.corn_score,
+            s.asia_handicap,
+            s.big_small
+        FROM football_ai_recommend_record r
+        LEFT JOIN t_leisu_schedule s
+               ON s.match_id = r.match_id
+    </sql>
+
+    <sql id="FastWhere">
+        <where>
+            <if test="q.model != null and q.model != ''">
+                AND r.model = #{q.model}
+            </if>
+
+            <if test="q.models != null and q.models.size() > 0">
+                AND r.model IN
+                <foreach collection="q.models" item="m" open="(" close=")" separator=",">
+                    #{m}
+                </foreach>
+            </if>
+
+            <!-- H5 默认只展示当前最新版本 -->
+            <if test="q.isLatest != null">
+                AND r.is_latest = #{q.isLatest}
+            </if>
+
+            <if test="q.minRate != null">
+                AND r.rate &gt;= #{q.minRate}
+            </if>
+
+            <if test="q.maxRate != null">
+                AND r.rate &lt;= #{q.maxRate}
+            </if>
+
+            <if test="q.market != null and q.market != ''">
+                AND r.market = #{q.market}
+            </if>
+
+            <if test="q.stage != null and q.stage != ''">
+                AND r.stage = #{q.stage}
+            </if>
+
+            <if test="q.recommendRole != null and q.recommendRole != ''">
+                AND COALESCE(r.recommend_role, 'primary') = #{q.recommendRole}
+            </if>
+
+            <if test="q.matchId != null and q.matchId != ''">
+                AND r.match_id = #{q.matchId}
+            </if>
+
+            <if test="q.dateFrom != null and q.dateFrom != ''">
+                AND r.match_time &gt;= CONCAT(#{q.dateFrom}, ' 00:00:00')
+            </if>
+
+            <if test="q.dateTo != null and q.dateTo != ''">
+                AND r.match_time &lt; DATE_ADD(CONCAT(#{q.dateTo}, ' 00:00:00'), INTERVAL 1 DAY)
+            </if>
+
+            <if test="q.q != null and q.q != ''">
+                AND (
+                    CAST(r.id AS CHAR) = #{q.q}
+                    OR r.match_id = #{q.q}
+                    OR r.league_name LIKE CONCAT('%', #{q.q}, '%')
+                    OR r.home_team LIKE CONCAT('%', #{q.q}, '%')
+                    OR r.guest_team LIKE CONCAT('%', #{q.q}, '%')
+                )
+            </if>
+
+            <!-- quick/status 直接下推数据库，不再 Java 查全表后过滤 -->
+            <if test="q.quick != null and q.quick != ''">
+                <choose>
+                    <when test="q.quick == 'pending'">
+                        AND r.result_status = 0
+                        AND r.is_latest = 1
+                    </when>
+                    <when test="q.quick == 'hit'">
+                        AND r.result_status IN (1,4)
+                    </when>
+                    <when test="q.quick == 'finished'">
+                        AND r.result_status IN (1,2,3,4,5)
+                    </when>
+                    <when test="q.quick == 'obsolete'">
+                        AND (r.result_status = 9 OR r.is_latest=0)
+                    </when>
+                </choose>
+            </if>
+
+            <if test="q.status != null and q.status != ''">
+                <choose>
+                    <when test="q.status == 'pending'">
+                        AND r.result_status = 0
+                    </when>
+                    <when test="q.status == 'hit'">
+                        AND r.result_status IN (1,4)
+                    </when>
+                    <when test="q.status == 'lost'">
+                        AND r.result_status IN (2,5)
+                    </when>
+                    <when test="q.status == 'push'">
+                        AND r.result_status = 3
+                    </when>
+                    <when test="q.status == 'finished'">
+                        AND r.result_status IN (1,2,3,4,5)
+                    </when>
+                    <when test="q.status == 'obsolete'">
+                        AND (r.result_status = 9 OR r.is_latest=0)
+                    </when>
+                </choose>
+            </if>
+        </where>
+    </sql>
+
+    <select id="selectFastList" resultType="java.util.LinkedHashMap">
+        <include refid="FastSelect"/>
+        <include refid="FastWhere"/>
+
+        <!--
+          旧版 match_time 是 ASC，会把很早的历史比赛排在最前面。
+          V5 默认全部按“最新”倒序。
+        -->
+        <choose>
+            <when test="q.sortBy == 'rate'">
+                ORDER BY r.rate DESC, r.create_time DESC, r.id DESC
+            </when>
+            <when test="q.sortBy == 'create_time'">
+                ORDER BY r.create_time DESC, r.id DESC
+            </when>
+            <when test="q.sortBy == 'match_time_asc'">
+                ORDER BY r.match_time ASC, r.id DESC
+            </when>
+            <otherwise>
+                ORDER BY r.match_time DESC, r.create_time DESC, r.id DESC
+            </otherwise>
+        </choose>
+
+        LIMIT #{q.offset}, #{q.limit}
+    </select>
+
+    <select id="countFast" resultType="long">
+        SELECT COUNT(1)
+        FROM football_ai_recommend_record r
+        <include refid="FastWhere"/>
+    </select>
+
+    <!-- 一条聚合 SQL 返回 tab 数量，避免 Java 为 counts 把整张表读出来 -->
+    <select id="selectFastCounts" resultType="java.util.LinkedHashMap">
+        SELECT
+            COUNT(1) AS all_count,
+            SUM(CASE WHEN r.result_status = 0
+                      AND r.is_latest=1 THEN 1 ELSE 0 END) AS pending_count,
+            SUM(CASE WHEN r.result_status IN (1,4) THEN 1 ELSE 0 END) AS hit_count,
+            SUM(CASE WHEN r.result_status IN (1,2,3,4,5) THEN 1 ELSE 0 END) AS finished_count,
+            SUM(CASE WHEN r.result_status = 9
+                      OR r.is_latest=0 THEN 1 ELSE 0 END) AS obsolete_count
+        FROM football_ai_recommend_record r
+        <include refid="FastWhere"/>
+    </select>
+
+    <!--
+      首页专用：
+      一次取 jiebao+nami，替代前端两次 recommendations 请求。
+      只取最新版本，只返回卡片字段。
+    -->
+    <select id="selectHomeLatest" resultType="java.util.LinkedHashMap">
+        <include refid="FastSelect"/>
+        <where>
+            AND r.model IN ('jiebao','nami')
+            AND r.is_latest = 1
+            <if test="q.minRate != null">
+                AND r.rate &gt;= #{q.minRate}
+            </if>
+            <if test="q.status != null and q.status == 'pending'">
+                AND r.result_status = 0
+            </if>
+        </where>
+        ORDER BY r.create_time DESC, r.id DESC
+        LIMIT #{q.limit}
+    </select>
+
+    <!--
+      V12 详情极速查询：
+      推荐详情页核心字段全部来自 football_ai_recommend_record。
+      不再 JOIN t_leisu_schedule，避免详情主键查询被大表 JOIN 拖慢。
+      若以后确实需要实时比分，再单独做 /match-info 接口异步加载。
+    -->
+    <select id="selectById" resultType="java.util.LinkedHashMap">
+        <include refid="FastSelect"/>
+        WHERE r.id = #{id}
+        LIMIT 1
+    </select>
+
+    <select id="selectMatchCandidates" resultType="java.util.LinkedHashMap">
+        <include refid="DetailSelect"/>
+        WHERE r.match_id = #{matchId}
+        <if test="model != null and model != ''">
+            AND r.model = #{model}
+        </if>
+        ORDER BY r.is_latest DESC,
+                 r.create_time DESC,
+                 r.rate DESC,
+                 r.id DESC
+    </select>
+
+    <select id="selectMatchHistory"
+            resultType="java.util.LinkedHashMap">
+        SELECT
+            r.id,
+            r.model,
+            r.sport,
+            r.match_id,
+            r.league_name,
+            DATE_FORMAT(
+                    r.match_time,
+                    '%Y-%m-%d %H:%i:%s'
+            ) AS match_time,
+            r.home_team,
+            r.guest_team,
+            r.stage,
+            r.market,
+            r.direction,
+            r.handicap,
+            r.handicap AS display_handicap,
+            r.odds,
+            r.rate,
+            r.final_score,
+            COALESCE(
+                    r.recommend_role,
+                    'primary'
+            ) AS recommend_role,
+            r.recommend_home_score,
+            r.recommend_guest_score,
+            r.recommend_minute,
+            r.home_red,
+            r.guest_red,
+            r.result_status,
+            r.is_latest,
+            r.final_home_score,
+            r.final_guest_score,
+            DATE_FORMAT(
+                    r.settle_time,
+                    '%Y-%m-%d %H:%i:%s'
+            ) AS settle_time,
+            DATE_FORMAT(
+                    r.obsolete_time,
+                    '%Y-%m-%d %H:%i:%s'
+            ) AS obsolete_time,
+            DATE_FORMAT(
+                    r.create_time,
+                    '%Y-%m-%d %H:%i:%s'
+            ) AS create_time,
+            DATE_FORMAT(
+                    r.update_time,
+                    '%Y-%m-%d %H:%i:%s'
+            ) AS update_time
+        FROM football_ai_recommend_record r
+        WHERE r.match_id = #{matchId}
+          AND r.id != #{currentId}
+        ORDER BY
+            r.create_time DESC,
+            r.id DESC
+            LIMIT #{limit}
+    </select>
+
+</mapper>

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ruoyi.tianwen.mapper.TianwenSessionMapper">
+    <insert id="insert" parameterType="com.ruoyi.tianwen.domain.TianwenH5Session">
+        INSERT INTO tw_h5_session(token, user_id, expires_at, created_at)
+        VALUES (#{token}, #{userId}, #{expiresAt}, NOW())
+    </insert>
+
+    <select id="selectUserByToken" resultType="com.ruoyi.tianwen.domain.TianwenH5User">
+        SELECT u.id,
+               u.phone,
+               u.password_hash        passwordHash,
+               u.salt,
+               u.balance,
+               u.free_views_remaining freeViewsRemaining,
+               u.created_at           createdAt,
+               u.updated_at           updatedAt,
+               u.vip_level,
+               u.vip_start_at,
+               u.vip_expire_at
+        FROM tw_h5_session s
+        JOIN tw_h5_user u ON u.id = s.user_id
+        WHERE s.token = #{token}
+          AND s.expires_at &gt; #{now} LIMIT 1
+    </select>
+
+    <delete id="deleteByToken">
+        DELETE
+        FROM tw_h5_session
+        WHERE token = #{token}
+    </delete>
+
+    <delete id="deleteExpired">
+        DELETE
+        FROM tw_h5_session
+        WHERE expires_at &lt;= #{now}
+    </delete>
+</mapper>

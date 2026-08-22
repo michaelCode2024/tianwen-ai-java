@@ -1,0 +1,642 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC
+        "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.ruoyi.tianwen.mapper.TianwenAnalyticsMapper">
+
+    <!-- =========================================================
+         公共筛选
+         默认只统计最新版本，不让历史推荐重复进入战绩。
+         ========================================================= -->
+    <sql id="AnalyticsWhere">
+        <where>
+            AND r.is_latest = 1
+            AND r.result_status != 9
+
+            <if test="q.startTime != null">
+                AND r.match_time &gt;= #{q.startTime}
+            </if>
+
+            <if test="q.endTime != null">
+                AND r.match_time &lt; #{q.endTime}
+            </if>
+
+            <if test="q.sport != null and q.sport != '' and q.sport != 'all'">
+                AND r.sport = #{q.sport}
+            </if>
+
+            <if test="q.model != null and q.model != '' and q.model != 'all'">
+                AND r.model = #{q.model}
+            </if>
+
+            <if test="q.market != null and q.market != '' and q.market != 'all'">
+                AND r.market = #{q.market}
+            </if>
+
+            <if test="q.minRate != null">
+                AND r.rate &gt;= #{q.minRate}
+            </if>
+
+            <if test="q.maxRate != null">
+                AND r.rate &lt;= #{q.maxRate}
+            </if>
+        </where>
+    </sql>
+
+    <!-- =========================================================
+         核心总览
+         命中率：
+         (全赢 + 半赢 + 走水) / 已结算有效场次
+         走水计入命中，同时进入命中率分母。
+         ========================================================= -->
+    <select id="selectOverview"
+            resultType="java.util.LinkedHashMap">
+        SELECT
+        COUNT(*) AS total,
+
+        SUM(
+        CASE
+        WHEN r.result_status = 0
+        THEN 1 ELSE 0
+        END
+        ) AS pending,
+
+        SUM(
+        CASE
+        WHEN r.result_status IN (1,2,3,4,5)
+        THEN 1 ELSE 0
+        END
+        ) AS settled,
+
+        SUM(
+        CASE
+        WHEN r.result_status IN (1,3,4)
+        THEN 1 ELSE 0
+        END
+        ) AS hit,
+
+        SUM(
+        CASE
+        WHEN r.result_status IN (2,5)
+        THEN 1 ELSE 0
+        END
+        ) AS lost,
+
+        SUM(
+        CASE
+        WHEN r.result_status = 3
+        THEN 1 ELSE 0
+        END
+        ) AS push_count,
+
+        SUM(
+        CASE
+        WHEN r.result_status = 1
+        THEN 1 ELSE 0
+        END
+        ) AS full_win,
+
+        SUM(
+        CASE
+        WHEN r.result_status = 2
+        THEN 1 ELSE 0
+        END
+        ) AS full_loss,
+
+        SUM(
+        CASE
+        WHEN r.result_status = 4
+        THEN 1 ELSE 0
+        END
+        ) AS half_win,
+
+        SUM(
+        CASE
+        WHEN r.result_status = 5
+        THEN 1 ELSE 0
+        END
+        ) AS half_loss,
+
+        ROUND(
+        100.0 *
+        SUM(
+        CASE
+        WHEN r.result_status IN (1,3,4)
+        THEN 1 ELSE 0
+        END
+        )
+        /
+        NULLIF(
+        SUM(
+        CASE
+        WHEN r.result_status IN (1,2,3,4,5)
+        THEN 1 ELSE 0
+        END
+        ),
+        0
+        ),
+        2
+        ) AS hit_rate,
+
+        ROUND(
+        AVG(
+        CASE
+        WHEN r.result_status IN (1,2,3,4,5)
+        THEN r.rate
+        ELSE NULL
+        END
+        ),
+        2
+        ) AS avg_rate
+
+        FROM football_ai_recommend_record r
+        <include refid="AnalyticsWhere"/>
+    </select>
+
+
+    <!-- =========================================================
+         每日趋势
+         ========================================================= -->
+    <select id="selectDailyTrend"
+            resultType="java.util.LinkedHashMap">
+        SELECT
+        DATE(r.match_time) AS stat_date,
+
+        COUNT(*) AS total,
+
+        SUM(
+        CASE
+        WHEN r.result_status IN (1,2,3,4,5)
+        THEN 1 ELSE 0
+        END
+        ) AS settled,
+
+        SUM(
+        CASE
+        WHEN r.result_status IN (1,3,4)
+        THEN 1 ELSE 0
+        END
+        ) AS hit,
+
+        SUM(
+        CASE
+        WHEN r.result_status IN (2,5)
+        THEN 1 ELSE 0
+        END
+        ) AS lost,
+
+        SUM(
+        CASE
+        WHEN r.result_status = 3
+        THEN 1 ELSE 0
+        END
+        ) AS push_count,
+
+        ROUND(
+        100.0 *
+        SUM(
+        CASE
+        WHEN r.result_status IN (1,3,4)
+        THEN 1 ELSE 0
+        END
+        )
+        /
+        NULLIF(
+        SUM(
+        CASE
+        WHEN r.result_status IN (1,2,3,4,5)
+        THEN 1 ELSE 0
+        END
+        ),
+        0
+        ),
+        2
+        ) AS hit_rate,
+
+        ROUND(AVG(r.rate), 2) AS avg_rate
+
+        FROM football_ai_recommend_record r
+        <include refid="AnalyticsWhere"/>
+
+        GROUP BY DATE(r.match_time)
+        ORDER BY stat_date ASC
+    </select>
+
+
+    <!-- =========================================================
+         玩法统计
+         最佳玩法只看有实际胜负样本的数据。
+         ========================================================= -->
+    <select id="selectMarketStats"
+            resultType="java.util.LinkedHashMap">
+        SELECT
+        COALESCE(NULLIF(r.market, ''), '未知') AS code,
+        COALESCE(NULLIF(r.market, ''), '未知') AS label,
+
+        COUNT(*) AS total,
+
+        SUM(
+        CASE
+        WHEN r.result_status IN (1,2,3,4,5)
+        THEN 1 ELSE 0
+        END
+        ) AS settled,
+
+        SUM(
+        CASE
+        WHEN r.result_status IN (1,3,4)
+        THEN 1 ELSE 0
+        END
+        ) AS hit,
+
+        SUM(
+        CASE
+        WHEN r.result_status IN (2,5)
+        THEN 1 ELSE 0
+        END
+        ) AS lost,
+
+        SUM(
+        CASE
+        WHEN r.result_status = 3
+        THEN 1 ELSE 0
+        END
+        ) AS push_count,
+
+        ROUND(
+        100.0 *
+        SUM(
+        CASE
+        WHEN r.result_status IN (1,3,4)
+        THEN 1 ELSE 0
+        END
+        )
+        /
+        NULLIF(
+        SUM(
+        CASE
+        WHEN r.result_status IN (1,2,3,4,5)
+        THEN 1 ELSE 0
+        END
+        ),
+        0
+        ),
+        2
+        ) AS hit_rate
+
+        FROM football_ai_recommend_record r
+        <include refid="AnalyticsWhere"/>
+
+        GROUP BY COALESCE(NULLIF(r.market, ''), '未知')
+
+        HAVING SUM(
+        CASE
+        WHEN r.result_status IN (1,2,3,4,5)
+        THEN 1 ELSE 0
+        END
+        ) &gt; 0
+
+        ORDER BY hit_rate DESC, settled DESC
+    </select>
+
+
+    <!-- =========================================================
+         推荐度区间
+         用户明确需要 80以下、80-85、85-90、90-93、93-95、95-98、98-100
+         ========================================================= -->
+    <select id="selectRateBucketStats"
+            resultType="java.util.LinkedHashMap">
+        SELECT
+        bucket_code AS code,
+        bucket_label AS label,
+        COUNT(*) AS total,
+
+        SUM(
+        CASE
+        WHEN result_status IN (1,2,3,4,5)
+        THEN 1 ELSE 0
+        END
+        ) AS settled,
+
+        SUM(
+        CASE
+        WHEN result_status IN (1,3,4)
+        THEN 1 ELSE 0
+        END
+        ) AS hit,
+
+        SUM(
+        CASE
+        WHEN result_status IN (2,5)
+        THEN 1 ELSE 0
+        END
+        ) AS lost,
+
+        SUM(
+        CASE
+        WHEN result_status = 3
+        THEN 1 ELSE 0
+        END
+        ) AS push_count,
+
+        ROUND(
+        100.0 *
+        SUM(
+        CASE
+        WHEN result_status IN (1,3,4)
+        THEN 1 ELSE 0
+        END
+        )
+        /
+        NULLIF(
+        SUM(
+        CASE
+        WHEN result_status IN (1,2,3,4,5)
+        THEN 1 ELSE 0
+        END
+        ),
+        0
+        ),
+        2
+        ) AS hit_rate
+
+        FROM
+        (
+        SELECT
+        r.result_status,
+
+        CASE
+        WHEN r.rate &lt; 80 THEN 'lt80'
+        WHEN r.rate &lt; 85 THEN '80_85'
+        WHEN r.rate &lt; 90 THEN '85_90'
+        WHEN r.rate &lt; 93 THEN '90_93'
+        WHEN r.rate &lt; 95 THEN '93_95'
+        WHEN r.rate &lt; 98 THEN '95_98'
+        ELSE '98_100'
+        END AS bucket_code,
+
+        CASE
+        WHEN r.rate &lt; 80 THEN '80以下'
+        WHEN r.rate &lt; 85 THEN '80-85'
+        WHEN r.rate &lt; 90 THEN '85-90'
+        WHEN r.rate &lt; 93 THEN '90-93'
+        WHEN r.rate &lt; 95 THEN '93-95'
+        WHEN r.rate &lt; 98 THEN '95-98'
+        ELSE '98-100'
+        END AS bucket_label
+
+        FROM football_ai_recommend_record r
+        <include refid="AnalyticsWhere"/>
+        ) x
+
+        GROUP BY bucket_code, bucket_label
+
+        ORDER BY FIELD(
+        bucket_code,
+        'lt80',
+        '80_85',
+        '85_90',
+        '90_93',
+        '93_95',
+        '95_98',
+        '98_100'
+        )
+    </select>
+
+
+    <!-- =========================================================
+         模型对比：捷报 / 纳米
+         ========================================================= -->
+    <select id="selectModelStats"
+            resultType="java.util.LinkedHashMap">
+        SELECT
+        r.model AS code,
+
+        CASE
+        WHEN r.model = 'jiebao' THEN '捷报模型'
+        WHEN r.model = 'nami' THEN '纳米模型'
+        ELSE r.model
+        END AS label,
+
+        COUNT(*) AS total,
+
+        SUM(
+        CASE
+        WHEN r.result_status IN (1,2,3,4,5)
+        THEN 1 ELSE 0
+        END
+        ) AS settled,
+
+        SUM(
+        CASE
+        WHEN r.result_status IN (1,3,4)
+        THEN 1 ELSE 0
+        END
+        ) AS hit,
+
+        SUM(
+        CASE
+        WHEN r.result_status IN (2,5)
+        THEN 1 ELSE 0
+        END
+        ) AS lost,
+
+        SUM(
+        CASE
+        WHEN r.result_status = 3
+        THEN 1 ELSE 0
+        END
+        ) AS push_count,
+
+        ROUND(
+        100.0 *
+        SUM(
+        CASE
+        WHEN r.result_status IN (1,3,4)
+        THEN 1 ELSE 0
+        END
+        )
+        /
+        NULLIF(
+        SUM(
+        CASE
+        WHEN r.result_status IN (1,2,3,4,5)
+        THEN 1 ELSE 0
+        END
+        ),
+        0
+        ),
+        2
+        ) AS hit_rate,
+
+        ROUND(AVG(r.rate), 2) AS avg_rate
+
+        FROM football_ai_recommend_record r
+        <include refid="AnalyticsWhere"/>
+
+        GROUP BY r.model
+        ORDER BY hit_rate DESC, settled DESC
+    </select>
+
+
+    <!-- =========================================================
+         推荐结果分布
+         ========================================================= -->
+    <select id="selectResultDistribution"
+            resultType="java.util.LinkedHashMap">
+        SELECT
+        result_code AS code,
+        result_label AS label,
+        COUNT(*) AS total
+        FROM
+        (
+        SELECT
+        CASE
+        WHEN r.result_status IN (1,3,4)
+        THEN 'hit'
+        WHEN r.result_status IN (2,5)
+        THEN 'lost'
+        WHEN r.result_status = 3
+        THEN 'push'
+        ELSE 'pending'
+        END AS result_code,
+
+        CASE
+        WHEN r.result_status IN (1,3,4)
+        THEN '命中'
+        WHEN r.result_status IN (2,5)
+        THEN '未命中'
+        WHEN r.result_status = 3
+        THEN '走水'
+        ELSE '待结算'
+        END AS result_label
+
+        FROM football_ai_recommend_record r
+        <include refid="AnalyticsWhere"/>
+        ) x
+
+        GROUP BY result_code, result_label
+
+        ORDER BY FIELD(
+        result_code,
+        'hit',
+        'lost',
+        'push',
+        'pending'
+        )
+    </select>
+
+
+    <!-- =========================================================
+         AI指数分布
+         这里返回的是样本量+命中率，不再使用前端写死的28%/24%。
+         ========================================================= -->
+    <select id="selectRateDistribution"
+            resultType="java.util.LinkedHashMap">
+        SELECT
+        bucket_code AS code,
+        bucket_label AS label,
+        COUNT(*) AS total,
+        SUM(CASE WHEN result_status IN (1,2,3,4,5) THEN 1 ELSE 0 END) AS settled,
+        SUM(CASE WHEN result_status IN (1,3,4) THEN 1 ELSE 0 END) AS hit,
+        ROUND(
+        100.0 * SUM(CASE WHEN result_status IN (1,3,4) THEN 1 ELSE 0 END)
+        /
+        NULLIF(
+        SUM(CASE WHEN result_status IN (1,2,3,4,5) THEN 1 ELSE 0 END),
+        0
+        ),
+        2
+        ) AS hit_rate
+        FROM
+        (
+        SELECT
+        r.result_status,
+        CASE
+        WHEN r.rate &lt; 80 THEN 'lt80'
+        WHEN r.rate &lt; 85 THEN '80_85'
+        WHEN r.rate &lt; 90 THEN '85_90'
+        WHEN r.rate &lt; 93 THEN '90_93'
+        WHEN r.rate &lt; 95 THEN '93_95'
+        WHEN r.rate &lt; 98 THEN '95_98'
+        ELSE '98_100'
+        END AS bucket_code,
+        CASE
+        WHEN r.rate &lt; 80 THEN '80以下'
+        WHEN r.rate &lt; 85 THEN '80-85'
+        WHEN r.rate &lt; 90 THEN '85-90'
+        WHEN r.rate &lt; 93 THEN '90-93'
+        WHEN r.rate &lt; 95 THEN '93-95'
+        WHEN r.rate &lt; 98 THEN '95-98'
+        ELSE '98-100'
+        END AS bucket_label
+        FROM football_ai_recommend_record r
+        <include refid="AnalyticsWhere"/>
+        ) x
+        GROUP BY bucket_code, bucket_label
+        ORDER BY FIELD(
+        bucket_code,
+        'lt80','80_85','85_90','90_93','93_95','95_98','98_100'
+        )
+    </select>
+
+
+    <!-- =========================================================
+         足球/篮球统计
+         ========================================================= -->
+    <select id="selectSportStats"
+            resultType="java.util.LinkedHashMap">
+        SELECT
+        r.sport AS code,
+
+        CASE
+        WHEN r.sport = 'basketball' THEN '篮球'
+        ELSE '足球'
+        END AS label,
+
+        COUNT(*) AS total,
+
+        SUM(
+        CASE
+        WHEN r.result_status IN (1,2,3,4,5)
+        THEN 1 ELSE 0
+        END
+        ) AS settled,
+
+        SUM(
+        CASE
+        WHEN r.result_status IN (1,3,4)
+        THEN 1 ELSE 0
+        END
+        ) AS hit,
+
+        ROUND(
+        100.0 *
+        SUM(
+        CASE
+        WHEN r.result_status IN (1,3,4)
+        THEN 1 ELSE 0
+        END
+        )
+        /
+        NULLIF(
+        SUM(
+        CASE
+        WHEN r.result_status IN (1,2,3,4,5)
+        THEN 1 ELSE 0
+        END
+        ),
+        0
+        ),
+        2
+        ) AS hit_rate
+
+        FROM football_ai_recommend_record r
+        <include refid="AnalyticsWhere"/>
+
+        GROUP BY r.sport
+        ORDER BY total DESC
+    </select>
+
+</mapper>

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ruoyi.tianwen.mapper.TianwenRecommendOverrideMapper">
+  <select id="selectById" resultType="com.ruoyi.tianwen.domain.TianwenRecommendOverride">
+    SELECT recommendation_id recommendationId,override_json overrideJson,admin_username adminUsername,created_at createdAt,updated_at updatedAt
+    FROM tw_h5_recommend_override WHERE recommendation_id=#{recommendationId}
+  </select>
+  <select id="selectByIds" resultType="com.ruoyi.tianwen.domain.TianwenRecommendOverride">
+    SELECT recommendation_id recommendationId,override_json overrideJson,admin_username adminUsername,created_at createdAt,updated_at updatedAt
+    FROM tw_h5_recommend_override WHERE recommendation_id IN
+    <foreach collection="list" item="id" open="(" close=")" separator=",">#{id}</foreach>
+  </select>
+  <insert id="upsert" parameterType="com.ruoyi.tianwen.domain.TianwenRecommendOverride">
+    INSERT INTO tw_h5_recommend_override(recommendation_id,override_json,admin_username,created_at,updated_at)
+    VALUES(#{recommendationId},#{overrideJson},#{adminUsername},NOW(),NOW())
+    ON DUPLICATE KEY UPDATE override_json=VALUES(override_json),admin_username=VALUES(admin_username),updated_at=NOW()
+  </insert>
+  <delete id="deleteById">DELETE FROM tw_h5_recommend_override WHERE recommendation_id=#{recommendationId}</delete>
+</mapper>
