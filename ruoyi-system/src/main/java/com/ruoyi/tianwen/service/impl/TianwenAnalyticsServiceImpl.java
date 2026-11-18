@@ -11,6 +11,9 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 
 /**
  * 天问AI 战绩 V2 + 数据中心 V2。
@@ -27,6 +30,10 @@ import java.util.Map;
 public class TianwenAnalyticsServiceImpl
         implements ITianwenAnalyticsService {
 
+    private static final long ANALYTICS_CACHE_MILLIS = 30_000L;
+    private static final int MAX_ANALYTICS_CACHE_SIZE = 100;
+    private final Map<String, CacheEntry> analyticsCache = new ConcurrentHashMap<>();
+
     private final TianwenAnalyticsMapper analyticsMapper;
 
     public TianwenAnalyticsServiceImpl(
@@ -39,73 +46,74 @@ public class TianwenAnalyticsServiceImpl
             Map<String,String> query) {
 
         QuerySpec spec = parse(query);
+        return getOrCompute("performance", spec.db, () -> {
+            Map<String,Object> overview =
+                    safeMap(
+                            analyticsMapper.selectOverview(
+                                    spec.db
+                            )
+                    );
 
-        Map<String,Object> overview =
-                safeMap(
-                        analyticsMapper.selectOverview(
-                                spec.db
-                        )
-                );
+            List<Map<String,Object>> daily =
+                    safeList(
+                            analyticsMapper.selectDailyTrend(
+                                    spec.db
+                            )
+                    );
 
-        List<Map<String,Object>> daily =
-                safeList(
-                        analyticsMapper.selectDailyTrend(
-                                spec.db
-                        )
-                );
+            List<Map<String,Object>> marketStats =
+                    safeList(
+                            analyticsMapper.selectMarketStats(
+                                    spec.db
+                            )
+                    );
 
-        List<Map<String,Object>> marketStats =
-                safeList(
-                        analyticsMapper.selectMarketStats(
-                                spec.db
-                        )
-                );
+            List<Map<String,Object>> rateStats =
+                    safeList(
+                            analyticsMapper.selectRateBucketStats(
+                                    spec.db
+                            )
+                    );
 
-        List<Map<String,Object>> rateStats =
-                safeList(
-                        analyticsMapper.selectRateBucketStats(
-                                spec.db
-                        )
-                );
+            List<Map<String,Object>> modelStats =
+                    safeList(
+                            analyticsMapper.selectModelStats(
+                                    spec.db
+                            )
+                    );
 
-        List<Map<String,Object>> modelStats =
-                safeList(
-                        analyticsMapper.selectModelStats(
-                                spec.db
-                        )
-                );
+            Map<String,Object> out =
+                    new LinkedHashMap<>();
 
-        Map<String,Object> out =
-                new LinkedHashMap<>();
+            out.put("code", 200);
+            out.put("range", spec.range);
+            out.put("days", spec.days);
+            out.put("filters", spec.filters);
 
-        out.put("code", 200);
-        out.put("range", spec.range);
-        out.put("days", spec.days);
-        out.put("filters", spec.filters);
+            out.put("overview", overview);
+            out.put("daily", daily);
 
-        out.put("overview", overview);
-        out.put("daily", daily);
+            out.put(
+                    "bestMarket",
+                    best(marketStats)
+            );
 
-        out.put(
-                "bestMarket",
-                best(marketStats)
-        );
+            out.put(
+                    "bestRateBucket",
+                    best(rateStats)
+            );
 
-        out.put(
-                "bestRateBucket",
-                best(rateStats)
-        );
+            out.put(
+                    "bestModel",
+                    best(modelStats)
+            );
 
-        out.put(
-                "bestModel",
-                best(modelStats)
-        );
+            out.put("marketStats", marketStats);
+            out.put("rateStats", rateStats);
+            out.put("modelStats", modelStats);
 
-        out.put("marketStats", marketStats);
-        out.put("rateStats", rateStats);
-        out.put("modelStats", modelStats);
-
-        return out;
+            return out;
+        });
     }
 
     @Override
@@ -113,48 +121,49 @@ public class TianwenAnalyticsServiceImpl
             Map<String,String> query) {
 
         QuerySpec spec = parse(query);
+        return getOrCompute("dataOverview", spec.db, () -> {
+            Map<String,Object> overview =
+                    safeMap(
+                            analyticsMapper.selectOverview(
+                                    spec.db
+                            )
+                    );
 
-        Map<String,Object> overview =
-                safeMap(
-                        analyticsMapper.selectOverview(
-                                spec.db
-                        )
-                );
+            List<Map<String,Object>> rateDistribution =
+                    safeList(
+                            analyticsMapper.selectRateDistribution(
+                                    spec.db
+                            )
+                    );
 
-        List<Map<String,Object>> rateDistribution =
-                safeList(
-                        analyticsMapper.selectRateDistribution(
-                                spec.db
-                        )
-                );
+            List<Map<String,Object>> resultDistribution =
+                    safeList(
+                            analyticsMapper.selectResultDistribution(
+                                    spec.db
+                            )
+                    );
 
-        List<Map<String,Object>> resultDistribution =
-                safeList(
-                        analyticsMapper.selectResultDistribution(
-                                spec.db
-                        )
-                );
+            List<Map<String,Object>> sportStats =
+                    safeList(
+                            analyticsMapper.selectSportStats(
+                                    spec.db
+                            )
+                    );
 
-        List<Map<String,Object>> sportStats =
-                safeList(
-                        analyticsMapper.selectSportStats(
-                                spec.db
-                        )
-                );
+            Map<String,Object> out =
+                    new LinkedHashMap<>();
 
-        Map<String,Object> out =
-                new LinkedHashMap<>();
+            out.put("code", 200);
+            out.put("range", spec.range);
+            out.put("days", spec.days);
+            out.put("filters", spec.filters);
+            out.put("overview", overview);
+            out.put("rateDistribution", rateDistribution);
+            out.put("resultDistribution", resultDistribution);
+            out.put("sportStats", sportStats);
 
-        out.put("code", 200);
-        out.put("range", spec.range);
-        out.put("days", spec.days);
-        out.put("filters", spec.filters);
-        out.put("overview", overview);
-        out.put("rateDistribution", rateDistribution);
-        out.put("resultDistribution", resultDistribution);
-        out.put("sportStats", sportStats);
-
-        return out;
+            return out;
+        });
     }
 
     @Override
@@ -162,25 +171,26 @@ public class TianwenAnalyticsServiceImpl
             Map<String,String> query) {
 
         QuerySpec spec = parse(query);
+        return getOrCompute("dataTrend", spec.db, () -> {
+            Map<String,Object> out =
+                    new LinkedHashMap<>();
 
-        Map<String,Object> out =
-                new LinkedHashMap<>();
+            out.put("code", 200);
+            out.put("range", spec.range);
+            out.put("days", spec.days);
+            out.put("filters", spec.filters);
 
-        out.put("code", 200);
-        out.put("range", spec.range);
-        out.put("days", spec.days);
-        out.put("filters", spec.filters);
+            out.put(
+                    "daily",
+                    safeList(
+                            analyticsMapper.selectDailyTrend(
+                                    spec.db
+                            )
+                    )
+            );
 
-        out.put(
-                "daily",
-                safeList(
-                        analyticsMapper.selectDailyTrend(
-                                spec.db
-                        )
-                )
-        );
-
-        return out;
+            return out;
+        });
     }
 
     @Override
@@ -188,25 +198,26 @@ public class TianwenAnalyticsServiceImpl
             Map<String,String> query) {
 
         QuerySpec spec = parse(query);
+        return getOrCompute("dataModels", spec.db, () -> {
+            List<Map<String,Object>> modelStats =
+                    safeList(
+                            analyticsMapper.selectModelStats(
+                                    spec.db
+                            )
+                    );
 
-        List<Map<String,Object>> modelStats =
-                safeList(
-                        analyticsMapper.selectModelStats(
-                                spec.db
-                        )
-                );
+            Map<String,Object> out =
+                    new LinkedHashMap<>();
 
-        Map<String,Object> out =
-                new LinkedHashMap<>();
+            out.put("code", 200);
+            out.put("range", spec.range);
+            out.put("days", spec.days);
+            out.put("filters", spec.filters);
+            out.put("items", modelStats);
+            out.put("bestModel", best(modelStats));
 
-        out.put("code", 200);
-        out.put("range", spec.range);
-        out.put("days", spec.days);
-        out.put("filters", spec.filters);
-        out.put("items", modelStats);
-        out.put("bestModel", best(modelStats));
-
-        return out;
+            return out;
+        });
     }
 
     /**
@@ -441,6 +452,49 @@ public class TianwenAnalyticsServiceImpl
         return value == null
                 ? new ArrayList<>()
                 : value;
+    }
+
+    private Map<String,Object> getOrCompute(
+            String method,
+            Map<String,Object> db,
+            Supplier<Map<String,Object>> loader) {
+
+        String key = buildCacheKey(method, db);
+        long now = System.currentTimeMillis();
+        CacheEntry cached = analyticsCache.get(key);
+        if (cached != null && cached.expireAt > now) {
+            return new LinkedHashMap<>(cached.data);
+        }
+
+        Map<String,Object> fresh = loader.get();
+        if (analyticsCache.size() >= MAX_ANALYTICS_CACHE_SIZE) {
+            analyticsCache.entrySet().removeIf(e -> e.getValue().expireAt <= now);
+            if (analyticsCache.size() >= MAX_ANALYTICS_CACHE_SIZE) {
+                analyticsCache.clear();
+            }
+        }
+        analyticsCache.put(key, new CacheEntry(now + ANALYTICS_CACHE_MILLIS, fresh));
+        return new LinkedHashMap<>(fresh);
+    }
+
+    private String buildCacheKey(String method, Map<String,Object> db) {
+        TreeMap<String, String> sorted = new TreeMap<>();
+        if (db != null) {
+            for (Map.Entry<String, Object> e : db.entrySet()) {
+                sorted.put(e.getKey(), String.valueOf(e.getValue()));
+            }
+        }
+        return method + ":" + sorted;
+    }
+
+    private static class CacheEntry {
+        final long expireAt;
+        final Map<String,Object> data;
+
+        CacheEntry(long expireAt, Map<String,Object> data) {
+            this.expireAt = expireAt;
+            this.data = data;
+        }
     }
 
     private static class QuerySpec {

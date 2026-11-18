@@ -31,9 +31,13 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
   private static final Set<String> LOST = Set.of("2", "5");
   private static final Set<String> FINISHED = Set.of("1", "2", "3", "4", "5");
 
-  // 推荐统计不是实时交易数据，缓存 15 秒即可大幅降低聚合 SQL 压力。
+  // 推荐统计与公共列表均非秒级交易数据，缓存 15 秒即可大幅降低 MySQL 排序与聚合压力。
   private static final long STATS_CACHE_MILLIS = 15_000L;
+  private static final long LIST_CACHE_MILLIS = 15_000L;
+  private static final int MAX_LIST_CACHE_SIZE = 200;
   private final Map<String, StatsCacheValue> statsCache = new ConcurrentHashMap<>();
+  private final Map<String, ListCacheValue> listCache = new ConcurrentHashMap<>();
+  private final Map<String, ListCacheValue> homeLatestCache = new ConcurrentHashMap<>();
 
   private final TianwenAiProperties properties;
   private final TianwenRecommendationMapper recommendationMapper;
@@ -112,15 +116,36 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
     // 多取 1 条用于判断是否还有下一页，避免 COUNT(*)。
     spec.db.put("limit", spec.pageSize + 1);
 
-    List<Map<String, Object>> raw = recommendationMapper.selectFastList(spec.db);
-    boolean hasMore = raw.size() > spec.pageSize;
+    boolean cacheable = trim(query == null ? null : query.get("q")).isEmpty() && spec.page <= 5;
+    String cacheKey = cacheable ? buildListCacheKey(spec.db) : null;
+    long now = System.currentTimeMillis();
 
-    if (hasMore) {
-      raw = new ArrayList<>(raw.subList(0, spec.pageSize));
+    List<Map<String, Object>> items = null;
+    boolean hasMore = false;
+
+    if (cacheKey != null) {
+      ListCacheValue cached = listCache.get(cacheKey);
+      if (cached != null && cached.expireAt > now) {
+        items = cached.items;
+        hasMore = cached.hasMore;
+      }
     }
 
-    List<Map<String, Object>> items = applyOverrides(raw);
-    items.forEach(this::decorateAndScript);
+    if (items == null) {
+      List<Map<String, Object>> raw = recommendationMapper.selectFastList(spec.db);
+      hasMore = raw.size() > spec.pageSize;
+
+      if (hasMore) {
+        raw = new ArrayList<>(raw.subList(0, spec.pageSize));
+      }
+
+      items = applyOverrides(raw);
+      items.forEach(this::decorateAndScript);
+
+      if (cacheKey != null) {
+        putListCache(listCache, cacheKey, new ListCacheValue(now + LIST_CACHE_MILLIS, items, hasMore), now);
+      }
+    }
 
     Set<String> unlocked =
         user == null
@@ -211,9 +236,19 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
     db.put("limit", limit);
     db.put("status", trim(q.get("status")));
 
-    List<Map<String, Object>> raw = recommendationMapper.selectHomeLatest(db);
-    List<Map<String, Object>> rows = applyOverrides(raw);
-    rows.forEach(this::decorateAndScript);
+    String cacheKey = buildListCacheKey(db);
+    long now = System.currentTimeMillis();
+    ListCacheValue cached = homeLatestCache.get(cacheKey);
+
+    List<Map<String, Object>> rows;
+    if (cached != null && cached.expireAt > now) {
+      rows = cached.items;
+    } else {
+      List<Map<String, Object>> raw = recommendationMapper.selectHomeLatest(db);
+      rows = applyOverrides(raw);
+      rows.forEach(this::decorateAndScript);
+      putListCache(homeLatestCache, cacheKey, new ListCacheValue(now + LIST_CACHE_MILLIS, rows, false), now);
+    }
 
     Set<String> unlocked =
         user == null
@@ -1109,6 +1144,27 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
 
   private void clearStatsCache() {
     statsCache.clear();
+    listCache.clear();
+    homeLatestCache.clear();
+  }
+
+  private String buildListCacheKey(Map<String, Object> db) {
+    TreeMap<String, String> sorted = new TreeMap<>();
+    for (Map.Entry<String, Object> e : db.entrySet()) {
+      sorted.put(e.getKey(), String.valueOf(e.getValue()));
+    }
+    return sorted.toString();
+  }
+
+  private void putListCache(
+      Map<String, ListCacheValue> cache, String key, ListCacheValue value, long now) {
+    if (cache.size() >= MAX_LIST_CACHE_SIZE) {
+      cache.entrySet().removeIf(e -> e.getValue().expireAt <= now);
+      if (cache.size() >= MAX_LIST_CACHE_SIZE) {
+        cache.clear();
+      }
+    }
+    cache.put(key, value);
   }
 
   private String buildStatsCacheKey(Map<String, Object> db) {
@@ -1139,6 +1195,18 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
     StatsCacheValue(long expireAt, Map<String, Object> data) {
       this.expireAt = expireAt;
       this.data = data;
+    }
+  }
+
+  private static class ListCacheValue {
+    final long expireAt;
+    final List<Map<String, Object>> items;
+    final boolean hasMore;
+
+    ListCacheValue(long expireAt, List<Map<String, Object>> items, boolean hasMore) {
+      this.expireAt = expireAt;
+      this.items = items;
+      this.hasMore = hasMore;
     }
   }
 
