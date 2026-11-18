@@ -52,4 +52,11 @@
                                        updated_at=NOW()
                                    WHERE id = #{id}
                                      AND free_views_remaining &gt; 0</update>
+
+    <update id="updateVip">UPDATE tw_h5_user
+                           SET vip_level=#{vipLevel},
+                               vip_start_at=#{vipStartAt},
+                               vip_expire_at=#{vipExpireAt},
+                               updated_at=NOW()
+                           WHERE id = #{id}</update>
 </mapper>

@@ -334,4 +334,91 @@
             LIMIT #{limit}
     </select>
 
+    <sql id="PredictionColumns">
+        p.id AS prediction_id,
+        p.model_platform,
+        p.match_id,
+        p.model_version,
+        p.lambda_home,
+        p.lambda_away,
+        p.p_home,
+        p.p_draw,
+        p.p_away,
+        p.score_home,
+        p.score_away,
+        p.euro_direction,
+        p.euro_odds,
+        p.euro_prob,
+        p.euro_kelly,
+        p.euro_status,
+        p.ou_direction,
+        p.ou_line,
+        p.ou_odds,
+        p.ou_prob,
+        p.ou_kelly,
+        p.ou_status,
+        p.asia_direction,
+        p.asia_line,
+        p.asia_odds,
+        p.asia_prob,
+        p.asia_kelly,
+        p.asia_status,
+        p.analysis_json,
+        p.final_home_score,
+        p.final_away_score,
+        p.result_status,
+        s.stage AS snapshot_stage,
+        s.league_name,
+        DATE_FORMAT(s.match_time, '%Y-%m-%d %H:%i:%s') AS match_time,
+        s.home_team,
+        s.away_team,
+        (
+            SELECT r.id
+            FROM football_ai_recommend_record r
+            WHERE r.match_id = p.match_id
+              AND r.model = CASE WHEN p.model_platform = 'antscore' THEN 'nami' ELSE 'jiebao' END
+            ORDER BY r.is_latest DESC, r.id DESC
+            LIMIT 1
+        ) AS recommendation_id
+    </sql>
+
+    <select id="selectReplayPrediction" resultType="java.util.LinkedHashMap">
+        SELECT *
+        FROM (
+            SELECT
+                <include refid="PredictionColumns"/>,
+                ROW_NUMBER() OVER (
+                    PARTITION BY p.match_id
+                    ORDER BY CASE s.stage WHEN '即时盘' THEN 0 WHEN '初盘' THEN 1 ELSE 2 END, p.id DESC
+                ) AS replay_rank
+            FROM football_prediction p
+            INNER JOIN football_feature_snapshot s ON s.id = p.snapshot_id
+            WHERE p.model_platform = #{platform}
+              AND p.match_id = #{matchId}
+              AND s.stage IN ('初盘', '即时盘')
+        ) ranked
+        WHERE ranked.replay_rank = 1
+        LIMIT 1
+    </select>
+
+    <select id="selectPredictionsByDate" resultType="java.util.LinkedHashMap">
+        SELECT *
+        FROM (
+            SELECT
+                <include refid="PredictionColumns"/>,
+                ROW_NUMBER() OVER (
+                    PARTITION BY p.match_id
+                    ORDER BY CASE s.stage WHEN '即时盘' THEN 0 WHEN '初盘' THEN 1 ELSE 2 END, p.id DESC
+                ) AS replay_rank
+            FROM football_prediction p
+            INNER JOIN football_feature_snapshot s ON s.id = p.snapshot_id
+            WHERE p.model_platform = #{platform}
+              AND s.stage IN ('初盘', '即时盘')
+              AND s.match_time &gt;= #{dayStart}
+              AND s.match_time &lt; #{dayEnd}
+        ) ranked
+        WHERE ranked.replay_rank = 1
+        ORDER BY ranked.match_time ASC, ranked.prediction_id DESC
+    </select>
+
 </mapper>

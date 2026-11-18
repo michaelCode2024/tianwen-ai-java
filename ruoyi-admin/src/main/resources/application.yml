@@ -154,3 +154,5 @@ tianwen:
     default-model: jiebao
     paid-unlock-amount: '9.90'
     allow-manual-paid-unlock: false
+    payment-notify-secret: ''
+    export-key: ''

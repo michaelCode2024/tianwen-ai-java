@@ -1,13 +1,18 @@
 package com.ruoyi.web.controller.tianwen;
 
 import com.ruoyi.common.annotation.Anonymous;
+import com.ruoyi.common.exception.ServiceException;
+import com.ruoyi.tianwen.config.TianwenAiProperties;
 import com.ruoyi.tianwen.domain.TianwenH5User;
 import com.ruoyi.tianwen.domain.TianwenVipLevel;
 import com.ruoyi.tianwen.dto.AuthRequest;
 import com.ruoyi.tianwen.dto.UnlockRequest;
 import com.ruoyi.tianwen.service.ITianwenRecommendationService;
 import com.ruoyi.tianwen.service.ITianwenUserService;
+import com.ruoyi.tianwen.service.impl.TianwenOrderService;
 import jakarta.servlet.http.HttpServletRequest;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -20,11 +25,18 @@ public class TianwenH5Controller {
 
   private final ITianwenUserService userService;
   private final ITianwenRecommendationService recommendationService;
+  private final TianwenOrderService orderService;
+  private final TianwenAiProperties properties;
 
   public TianwenH5Controller(
-      ITianwenUserService userService, ITianwenRecommendationService recommendationService) {
+      ITianwenUserService userService,
+      ITianwenRecommendationService recommendationService,
+      TianwenOrderService orderService,
+      TianwenAiProperties properties) {
     this.userService = userService;
     this.recommendationService = recommendationService;
+    this.orderService = orderService;
+    this.properties = properties;
   }
 
   @GetMapping("/me")
@@ -99,6 +111,15 @@ public class TianwenH5Controller {
     return recommendationService.homeLatest(query, user);
   }
 
+  @GetMapping("/predictions")
+  public Map<String, Object> predictions(
+      @RequestParam(required = false) String date,
+      @RequestParam(defaultValue = "jiebao") String model,
+      HttpServletRequest request) {
+    TianwenH5User user = userService.currentUser(readToken(request));
+    return recommendationService.predictions(date, model, user);
+  }
+
   @GetMapping("/recommendations/{id}")
   public Map<String, Object> recommendationDetail(
       @PathVariable String id,
@@ -118,6 +139,56 @@ public class TianwenH5Controller {
   public Map<String, Object> unlock(@RequestBody UnlockRequest body, HttpServletRequest request) {
 
     return userService.unlock(readToken(request), body.getRecommendationId(), body.getUnlockType());
+  }
+
+  @PostMapping("/orders")
+  public Map<String, Object> createOrder(
+      @RequestBody Map<String, Object> body, HttpServletRequest request) {
+    return orderService.create(userService.currentUser(readToken(request)), body);
+  }
+
+  @GetMapping("/orders")
+  public Map<String, Object> orders(HttpServletRequest request) {
+    return orderService.list(userService.currentUser(readToken(request)));
+  }
+
+  @GetMapping("/orders/{orderNo}")
+  public Map<String, Object> order(@PathVariable String orderNo, HttpServletRequest request) {
+    return orderService.detail(userService.currentUser(readToken(request)), orderNo);
+  }
+
+  @PostMapping("/orders/{orderNo}/notify")
+  public Map<String, Object> confirmOrder(
+      @PathVariable String orderNo,
+      @RequestHeader(value = "X-Tianwen-Notify-Secret", required = false) String secret,
+      @RequestBody(required = false) Map<String, Object> body) {
+    String channel = body == null ? "callback" : String.valueOf(body.getOrDefault("channel", "callback"));
+    return orderService.confirmPaid(orderNo, secret, channel);
+  }
+
+  @GetMapping("/export/predictions")
+  public Map<String, Object> exportPredictions(
+      @RequestParam(required = false) String date,
+      @RequestParam(defaultValue = "jiebao") String model,
+      @RequestHeader(value = "X-Tianwen-Export-Key", required = false) String key) {
+    String expected = properties.getExportKey();
+    if (expected == null || expected.isBlank()) {
+      throw new ServiceException("导出密钥未配置");
+    }
+    if (!sameSecret(expected, key)) {
+      throw new ServiceException("导出密钥不正确");
+    }
+    return recommendationService.exportPredictions(date, model);
+  }
+
+  private static boolean sameSecret(String expected, String actual) {
+    String left = expected == null ? "" : expected.trim();
+    String right = actual == null ? "" : actual.trim();
+    if (left.isEmpty()) {
+      return false;
+    }
+    return MessageDigest.isEqual(
+        left.getBytes(StandardCharsets.UTF_8), right.getBytes(StandardCharsets.UTF_8));
   }
 
   private String readToken(HttpServletRequest request) {

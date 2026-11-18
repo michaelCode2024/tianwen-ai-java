@@ -32,6 +32,10 @@ public interface ITianwenRecommendationService {
             TianwenH5User user
     );
 
+    Map<String, Object> predictions(String date, String model, TianwenH5User user);
+
+    Map<String, Object> exportPredictions(String date, String model);
+
     Map<String,Object> adminList(
             Map<String,String> query
     );

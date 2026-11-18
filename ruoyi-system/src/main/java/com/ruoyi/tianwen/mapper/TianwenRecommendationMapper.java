@@ -2,6 +2,7 @@ package com.ruoyi.tianwen.mapper;
 
 import org.apache.ibatis.annotations.Param;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
@@ -38,5 +39,16 @@ public interface TianwenRecommendationMapper {
     List<Map<String,Object>> selectMatchCandidates(
             @Param("matchId") String matchId,
             @Param("model") String model
+    );
+
+    Map<String, Object> selectReplayPrediction(
+            @Param("platform") String platform,
+            @Param("matchId") String matchId
+    );
+
+    List<Map<String, Object>> selectPredictionsByDate(
+            @Param("platform") String platform,
+            @Param("dayStart") LocalDateTime dayStart,
+            @Param("dayEnd") LocalDateTime dayEnd
     );
 }

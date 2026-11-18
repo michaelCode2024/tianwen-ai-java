@@ -2,6 +2,7 @@ package com.ruoyi.tianwen.mapper;
 
 import com.ruoyi.tianwen.domain.TianwenUnlock;
 import java.math.BigDecimal;
+import java.util.Collection;
 import java.util.List;
 import org.apache.ibatis.annotations.Param;
 
@@ -11,6 +12,9 @@ public interface TianwenUnlockMapper {
       @Param("userId") Long userId, @Param("recommendationId") String recommendationId);
 
   List<String> selectUnlockedIds(@Param("userId") Long userId);
+
+  List<String> selectUnlockedMatchIds(
+      @Param("userId") Long userId, @Param("matchIds") Collection<String> matchIds);
 
   int insert(TianwenUnlock unlock);
 

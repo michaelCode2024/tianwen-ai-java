@@ -13,10 +13,15 @@ import com.ruoyi.tianwen.mapper.TianwenRecommendationMapper;
 import com.ruoyi.tianwen.mapper.TianwenUnlockMapper;
 import com.ruoyi.tianwen.service.ITianwenAccessPolicyService;
 import com.ruoyi.tianwen.service.ITianwenRecommendationService;
+import com.ruoyi.tianwen.util.TianwenPredictionView;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeParseException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 
 /**
@@ -394,8 +399,128 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
     out.put("historyCount", history.size());
     out.put("match", match);
     out.put("auth", auth(user, normalizeModel(str(row.get("model")))));
+    out.put("prediction", predictionFor(row, Boolean.TRUE.equals(current.get("canView"))));
 
     return out;
+  }
+
+  @Override
+  public Map<String, Object> predictions(String date, String model, TianwenH5User user) {
+    LocalDate day = predictionDay(date);
+    String platform = TianwenPredictionView.platformOf(model);
+    List<Map<String, Object>> rows;
+    try {
+      rows =
+          recommendationMapper.selectPredictionsByDate(
+              platform, day.atStartOfDay(), day.plusDays(1).atStartOfDay());
+    } catch (DataAccessException e) {
+      throw new ServiceException("赛前预测还没有写入当前数据库");
+    }
+    if (rows == null) {
+      rows = List.of();
+    }
+    Set<String> unlockedMatches = unlockedMatches(user, rows);
+    List<Map<String, Object>> items = new ArrayList<>();
+    for (Map<String, Object> row : rows) {
+      boolean allowed = predictionAllowed(user, row, unlockedMatches);
+      items.add(TianwenPredictionView.fromRow(row, allowed));
+    }
+    Map<String, Object> out = new LinkedHashMap<>();
+    out.put("code", 200);
+    out.put("date", day.toString());
+    out.put("model", normalizeModel(model));
+    out.put("platform", platform);
+    out.put("items", items);
+    out.put("count", items.size());
+    return out;
+  }
+
+  @Override
+  public Map<String, Object> exportPredictions(String date, String model) {
+    LocalDate day = predictionDay(date);
+    String platform = TianwenPredictionView.platformOf(model);
+    List<Map<String, Object>> rows;
+    try {
+      rows =
+          recommendationMapper.selectPredictionsByDate(
+              platform, day.atStartOfDay(), day.plusDays(1).atStartOfDay());
+    } catch (DataAccessException e) {
+      throw new ServiceException("赛前预测还没有写入当前数据库");
+    }
+    if (rows == null) {
+      rows = List.of();
+    }
+    List<Map<String, Object>> items = new ArrayList<>();
+    for (Map<String, Object> row : rows) {
+      items.add(TianwenPredictionView.fromRow(row, true));
+    }
+    Map<String, Object> out = new LinkedHashMap<>();
+    out.put("code", 200);
+    out.put("date", day.toString());
+    out.put("model", normalizeModel(model));
+    out.put("platform", platform);
+    out.put("items", items);
+    out.put("count", items.size());
+    out.put("note", "这是赛前快照算出的方向，结算状态只描述已经结束的比赛，不代表之后的命中率。");
+    return out;
+  }
+
+  private Map<String, Object> predictionFor(Map<String, Object> recommendation, boolean allowed) {
+    String matchId = str(recommendation.get("match_id"));
+    if (matchId.isEmpty()) {
+      return null;
+    }
+    try {
+      Map<String, Object> row =
+          recommendationMapper.selectReplayPrediction(
+              TianwenPredictionView.platformOf(str(recommendation.get("model"))), matchId);
+      if (row == null || row.isEmpty()) {
+        return null;
+      }
+      return TianwenPredictionView.fromRow(row, allowed);
+    } catch (DataAccessException e) {
+      return null;
+    }
+  }
+
+  private boolean predictionAllowed(
+      TianwenH5User user, Map<String, Object> row, Set<String> unlockedMatches) {
+    Map<String, Object> gate = new LinkedHashMap<>();
+    gate.put("result_status", TianwenPredictionView.settled(row) ? "1" : "0");
+    gate.put("is_latest", "1");
+    gate.put("rate", null);
+    boolean unlocked = unlockedMatches.contains(str(row.get("match_id")));
+    TianwenAccessResult access = accessPolicyService.check(user, gate, unlocked);
+    return access != null && access.isAllowed();
+  }
+
+  private Set<String> unlockedMatches(TianwenH5User user, List<Map<String, Object>> rows) {
+    if (user == null || user.getId() == null || rows.isEmpty()) {
+      return Set.of();
+    }
+    List<String> matchIds = new ArrayList<>();
+    for (Map<String, Object> row : rows) {
+      String matchId = str(row.get("match_id"));
+      if (!matchId.isEmpty()) {
+        matchIds.add(matchId);
+      }
+    }
+    if (matchIds.isEmpty()) {
+      return Set.of();
+    }
+    List<String> unlocked = unlockMapper.selectUnlockedMatchIds(user.getId(), matchIds);
+    return unlocked == null ? Set.of() : new HashSet<>(unlocked);
+  }
+
+  private LocalDate predictionDay(String date) {
+    if (date == null || date.isBlank()) {
+      return LocalDate.now(ZoneId.of("Asia/Shanghai"));
+    }
+    try {
+      return LocalDate.parse(date.trim());
+    } catch (DateTimeParseException e) {
+      throw new ServiceException("date格式应为yyyy-MM-dd");
+    }
   }
 
   private void decorateResult(Map<String, Object> row) {
