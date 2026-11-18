@@ -15,7 +15,10 @@ import com.ruoyi.tianwen.service.ITianwenAccessPolicyService;
 import com.ruoyi.tianwen.service.ITianwenRecommendationService;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
 
@@ -31,13 +34,19 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
   private static final Set<String> LOST = Set.of("2", "5");
   private static final Set<String> FINISHED = Set.of("1", "2", "3", "4", "5");
 
-  // 推荐统计与公共列表均非秒级交易数据，缓存 15 秒即可大幅降低 MySQL 排序与聚合压力。
-  private static final long STATS_CACHE_MILLIS = 15_000L;
-  private static final long LIST_CACHE_MILLIS = 15_000L;
+  // 推荐统计与公共列表采用 SWR：30 秒内直接命中，30 秒~5 分钟先秒返旧缓存并后台单飞刷新，避免用户撞冷查询。
+  private static final long STATS_FRESH_MILLIS = 30_000L;
+  private static final long STATS_STALE_MILLIS = 300_000L;
+  private static final long LIST_FRESH_MILLIS = 30_000L;
+  private static final long LIST_STALE_MILLIS = 300_000L;
   private static final int MAX_LIST_CACHE_SIZE = 200;
+  private final AtomicLong cacheEpoch = new AtomicLong(0L);
   private final Map<String, StatsCacheValue> statsCache = new ConcurrentHashMap<>();
   private final Map<String, ListCacheValue> listCache = new ConcurrentHashMap<>();
   private final Map<String, ListCacheValue> homeLatestCache = new ConcurrentHashMap<>();
+  private final Set<String> refreshingStatsKeys = ConcurrentHashMap.newKeySet();
+  private final Set<String> refreshingListKeys = ConcurrentHashMap.newKeySet();
+  private final Set<String> refreshingHomeKeys = ConcurrentHashMap.newKeySet();
 
   private final TianwenAiProperties properties;
   private final TianwenRecommendationMapper recommendationMapper;
@@ -118,34 +127,18 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
 
     boolean cacheable = trim(query == null ? null : query.get("q")).isEmpty() && spec.page <= 5;
     String cacheKey = cacheable ? buildListCacheKey(spec.db) : null;
-    long now = System.currentTimeMillis();
 
-    List<Map<String, Object>> items = null;
-    boolean hasMore = false;
+    ListCacheValue listValue =
+        cacheKey != null
+            ? getOrRefreshListCache(
+                listCache,
+                refreshingListKeys,
+                cacheKey,
+                () -> computeListValue(spec))
+            : computeListValue(spec);
 
-    if (cacheKey != null) {
-      ListCacheValue cached = listCache.get(cacheKey);
-      if (cached != null && cached.expireAt > now) {
-        items = cached.items;
-        hasMore = cached.hasMore;
-      }
-    }
-
-    if (items == null) {
-      List<Map<String, Object>> raw = recommendationMapper.selectFastList(spec.db);
-      hasMore = raw.size() > spec.pageSize;
-
-      if (hasMore) {
-        raw = new ArrayList<>(raw.subList(0, spec.pageSize));
-      }
-
-      items = applyOverrides(raw);
-      items.forEach(this::decorateAndScript);
-
-      if (cacheKey != null) {
-        putListCache(listCache, cacheKey, new ListCacheValue(now + LIST_CACHE_MILLIS, items, hasMore), now);
-      }
-    }
+    List<Map<String, Object>> items = listValue.items;
+    boolean hasMore = listValue.hasMore;
 
     Set<String> unlocked =
         user == null
@@ -195,10 +188,41 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
 
     long now = System.currentTimeMillis();
     StatsCacheValue cached = statsCache.get(cacheKey);
-    if (cached != null && cached.expireAt > now) {
+    if (cached != null && cached.staleAt > now) {
+      if (cached.freshUntil <= now && refreshingStatsKeys.add(cacheKey)) {
+        long epoch = cacheEpoch.get();
+        CompletableFuture.runAsync(
+            () -> {
+              try {
+                Map<String, Object> fresh = computeStats(spec);
+                if (cacheEpoch.get() == epoch) {
+                  long ts = System.currentTimeMillis();
+                  statsCache.put(
+                      cacheKey,
+                      new StatsCacheValue(
+                          ts + STATS_FRESH_MILLIS, ts + STATS_STALE_MILLIS, deepCopyMap(fresh)));
+                }
+              } finally {
+                refreshingStatsKeys.remove(cacheKey);
+              }
+            });
+      }
       return deepCopyMap(cached.data);
     }
 
+    long epoch = cacheEpoch.get();
+    Map<String, Object> out = computeStats(spec);
+    if (cacheEpoch.get() == epoch) {
+      long ts = System.currentTimeMillis();
+      statsCache.put(
+          cacheKey,
+          new StatsCacheValue(ts + STATS_FRESH_MILLIS, ts + STATS_STALE_MILLIS, deepCopyMap(out)));
+    }
+
+    return out;
+  }
+
+  private Map<String, Object> computeStats(QuerySpec spec) {
     Map<String, Object> countRow = recommendationMapper.selectFastCounts(spec.db);
 
     Map<String, Integer> counts = new LinkedHashMap<>();
@@ -212,9 +236,6 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
     out.put("code", 200);
     out.put("counts", counts);
     out.put("count", counts.get("all"));
-
-    statsCache.put(cacheKey, new StatsCacheValue(now + STATS_CACHE_MILLIS, deepCopyMap(out)));
-
     return out;
   }
 
@@ -237,18 +258,20 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
     db.put("status", trim(q.get("status")));
 
     String cacheKey = buildListCacheKey(db);
-    long now = System.currentTimeMillis();
-    ListCacheValue cached = homeLatestCache.get(cacheKey);
-
-    List<Map<String, Object>> rows;
-    if (cached != null && cached.expireAt > now) {
-      rows = cached.items;
-    } else {
-      List<Map<String, Object>> raw = recommendationMapper.selectHomeLatest(db);
-      rows = applyOverrides(raw);
-      rows.forEach(this::decorateAndScript);
-      putListCache(homeLatestCache, cacheKey, new ListCacheValue(now + LIST_CACHE_MILLIS, rows, false), now);
-    }
+    List<Map<String, Object>> rows =
+        getOrRefreshListCache(
+                homeLatestCache,
+                refreshingHomeKeys,
+                cacheKey,
+                () -> {
+                  List<Map<String, Object>> raw = recommendationMapper.selectHomeLatest(db);
+                  List<Map<String, Object>> computed = applyOverrides(raw);
+                  computed.forEach(this::decorateAndScript);
+                  long ts = System.currentTimeMillis();
+                  return new ListCacheValue(
+                      ts + LIST_FRESH_MILLIS, ts + LIST_STALE_MILLIS, computed, false);
+                })
+            .items;
 
     Set<String> unlocked =
         user == null
@@ -1143,9 +1166,54 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
   }
 
   private void clearStatsCache() {
+    cacheEpoch.incrementAndGet();
     statsCache.clear();
     listCache.clear();
     homeLatestCache.clear();
+  }
+
+  private ListCacheValue computeListValue(QuerySpec spec) {
+    List<Map<String, Object>> raw = recommendationMapper.selectFastList(spec.db);
+    boolean hasMore = raw.size() > spec.pageSize;
+    if (hasMore) {
+      raw = new ArrayList<>(raw.subList(0, spec.pageSize));
+    }
+    List<Map<String, Object>> items = applyOverrides(raw);
+    items.forEach(this::decorateAndScript);
+    long ts = System.currentTimeMillis();
+    return new ListCacheValue(ts + LIST_FRESH_MILLIS, ts + LIST_STALE_MILLIS, items, hasMore);
+  }
+
+  private ListCacheValue getOrRefreshListCache(
+      Map<String, ListCacheValue> cache,
+      Set<String> refreshingKeys,
+      String key,
+      Supplier<ListCacheValue> loader) {
+    long now = System.currentTimeMillis();
+    ListCacheValue cached = cache.get(key);
+    if (cached != null && cached.staleAt > now) {
+      if (cached.freshUntil <= now && refreshingKeys.add(key)) {
+        long epoch = cacheEpoch.get();
+        CompletableFuture.runAsync(
+            () -> {
+              try {
+                ListCacheValue fresh = loader.get();
+                if (cacheEpoch.get() == epoch) {
+                  putListCache(cache, key, fresh, System.currentTimeMillis());
+                }
+              } finally {
+                refreshingKeys.remove(key);
+              }
+            });
+      }
+      return cached;
+    }
+    long epoch = cacheEpoch.get();
+    ListCacheValue fresh = loader.get();
+    if (cacheEpoch.get() == epoch) {
+      putListCache(cache, key, fresh, System.currentTimeMillis());
+    }
+    return fresh;
   }
 
   private String buildListCacheKey(Map<String, Object> db) {
@@ -1159,7 +1227,7 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
   private void putListCache(
       Map<String, ListCacheValue> cache, String key, ListCacheValue value, long now) {
     if (cache.size() >= MAX_LIST_CACHE_SIZE) {
-      cache.entrySet().removeIf(e -> e.getValue().expireAt <= now);
+      cache.entrySet().removeIf(e -> e.getValue().staleAt <= now);
       if (cache.size() >= MAX_LIST_CACHE_SIZE) {
         cache.clear();
       }
@@ -1189,22 +1257,27 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
   }
 
   private static class StatsCacheValue {
-    final long expireAt;
+    final long freshUntil;
+    final long staleAt;
     final Map<String, Object> data;
 
-    StatsCacheValue(long expireAt, Map<String, Object> data) {
-      this.expireAt = expireAt;
+    StatsCacheValue(long freshUntil, long staleAt, Map<String, Object> data) {
+      this.freshUntil = freshUntil;
+      this.staleAt = staleAt;
       this.data = data;
     }
   }
 
   private static class ListCacheValue {
-    final long expireAt;
+    final long freshUntil;
+    final long staleAt;
     final List<Map<String, Object>> items;
     final boolean hasMore;
 
-    ListCacheValue(long expireAt, List<Map<String, Object>> items, boolean hasMore) {
-      this.expireAt = expireAt;
+    ListCacheValue(
+        long freshUntil, long staleAt, List<Map<String, Object>> items, boolean hasMore) {
+      this.freshUntil = freshUntil;
+      this.staleAt = staleAt;
       this.items = items;
       this.hasMore = hasMore;
     }

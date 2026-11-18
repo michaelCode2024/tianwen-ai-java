@@ -12,6 +12,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 
@@ -30,9 +31,11 @@ import java.util.function.Supplier;
 public class TianwenAnalyticsServiceImpl
         implements ITianwenAnalyticsService {
 
-    private static final long ANALYTICS_CACHE_MILLIS = 30_000L;
+    private static final long ANALYTICS_FRESH_MILLIS = 60_000L;
+    private static final long ANALYTICS_STALE_MILLIS = 600_000L;
     private static final int MAX_ANALYTICS_CACHE_SIZE = 100;
     private final Map<String, CacheEntry> analyticsCache = new ConcurrentHashMap<>();
+    private final java.util.Set<String> refreshingKeys = ConcurrentHashMap.newKeySet();
 
     private final TianwenAnalyticsMapper analyticsMapper;
 
@@ -462,19 +465,35 @@ public class TianwenAnalyticsServiceImpl
         String key = buildCacheKey(method, db);
         long now = System.currentTimeMillis();
         CacheEntry cached = analyticsCache.get(key);
-        if (cached != null && cached.expireAt > now) {
+        if (cached != null && cached.staleAt > now) {
+            if (cached.freshUntil <= now && refreshingKeys.add(key)) {
+                CompletableFuture.runAsync(() -> {
+                    try {
+                        putAnalyticsCache(key, loader.get(), System.currentTimeMillis());
+                    } finally {
+                        refreshingKeys.remove(key);
+                    }
+                });
+            }
             return new LinkedHashMap<>(cached.data);
         }
 
         Map<String,Object> fresh = loader.get();
+        putAnalyticsCache(key, fresh, System.currentTimeMillis());
+        return new LinkedHashMap<>(fresh);
+    }
+
+    private void putAnalyticsCache(String key, Map<String,Object> fresh, long now) {
         if (analyticsCache.size() >= MAX_ANALYTICS_CACHE_SIZE) {
-            analyticsCache.entrySet().removeIf(e -> e.getValue().expireAt <= now);
+            analyticsCache.entrySet().removeIf(e -> e.getValue().staleAt <= now);
             if (analyticsCache.size() >= MAX_ANALYTICS_CACHE_SIZE) {
                 analyticsCache.clear();
             }
         }
-        analyticsCache.put(key, new CacheEntry(now + ANALYTICS_CACHE_MILLIS, fresh));
-        return new LinkedHashMap<>(fresh);
+        analyticsCache.put(key, new CacheEntry(
+                now + ANALYTICS_FRESH_MILLIS,
+                now + ANALYTICS_STALE_MILLIS,
+                fresh));
     }
 
     private String buildCacheKey(String method, Map<String,Object> db) {
@@ -488,11 +507,13 @@ public class TianwenAnalyticsServiceImpl
     }
 
     private static class CacheEntry {
-        final long expireAt;
+        final long freshUntil;
+        final long staleAt;
         final Map<String,Object> data;
 
-        CacheEntry(long expireAt, Map<String,Object> data) {
-            this.expireAt = expireAt;
+        CacheEntry(long freshUntil, long staleAt, Map<String,Object> data) {
+            this.freshUntil = freshUntil;
+            this.staleAt = staleAt;
             this.data = data;
         }
     }
