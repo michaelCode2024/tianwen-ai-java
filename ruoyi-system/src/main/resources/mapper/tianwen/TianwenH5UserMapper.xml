@@ -15,13 +15,19 @@
         <result property="updatedAt" column="updated_at"/>
     </resultMap>
 
-    <select id="selectById" resultMap="UserMap">SELECT *
-                                                FROM tw_h5_user
-                                                WHERE id = #{id} LIMIT 1</select>
+    <select id="selectById" resultMap="UserMap">
+        SELECT *
+        FROM tw_h5_user
+        WHERE id = #{id}
+        LIMIT 1
+    </select>
 
-    <select id="selectByPhone" resultMap="UserMap">SELECT *
-                                                   FROM tw_h5_user
-                                                   WHERE phone = #{phone} LIMIT 1</select>
+    <select id="selectByPhone" resultMap="UserMap">
+        SELECT *
+        FROM tw_h5_user
+        WHERE phone = #{phone}
+        LIMIT 1
+    </select>
 
     <insert id="insert" parameterType="com.ruoyi.tianwen.domain.TianwenH5User" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO tw_h5_user(phone, password_hash, salt, balance, free_views_remaining, vip_level, vip_start_at,
@@ -30,26 +36,80 @@
                 #{vipStartAt}, #{vipExpireAt}, NOW(), NOW())
     </insert>
 
-    <update id="updatePassword">UPDATE tw_h5_user
-                                SET password_hash=#{passwordHash},
-                                    salt=#{salt},
-                                    updated_at=NOW()
-                                WHERE id = #{id}</update>
+    <update id="updatePassword">
+        UPDATE tw_h5_user
+        SET password_hash = #{passwordHash},
+            salt = #{salt},
+            updated_at = NOW()
+        WHERE id = #{id}
+    </update>
 
-    <update id="updateAsset">UPDATE tw_h5_user
-                             SET balance=#{balance},
-                                 free_views_remaining=#{freeViewsRemaining},
-                                 updated_at=NOW()
-                             WHERE id = #{id}</update>
+    <update id="updateAsset">
+        UPDATE tw_h5_user
+        SET balance = #{balance},
+            free_views_remaining = #{freeViewsRemaining},
+            updated_at = NOW()
+        WHERE id = #{id}
+    </update>
 
-    <update id="addFreeViews">UPDATE tw_h5_user
-                              SET free_views_remaining=GREATEST(0, free_views_remaining + #{delta}),
-                                  updated_at=NOW()
-                              WHERE id = #{id}</update>
+    <update id="addFreeViews">
+        UPDATE tw_h5_user
+        SET free_views_remaining = GREATEST(0, free_views_remaining + #{delta}),
+            updated_at = NOW()
+        WHERE id = #{id}
+    </update>
 
-    <update id="decrementFreeView">UPDATE tw_h5_user
-                                   SET free_views_remaining=free_views_remaining - 1,
-                                       updated_at=NOW()
-                                   WHERE id = #{id}
-                                     AND free_views_remaining &gt; 0</update>
+    <update id="decrementFreeView">
+        UPDATE tw_h5_user
+        SET free_views_remaining = free_views_remaining - 1,
+            updated_at = NOW()
+        WHERE id = #{id}
+          AND free_views_remaining &gt; 0
+    </update>
+
+    <update id="updateVip">
+        UPDATE tw_h5_user
+        SET vip_level = #{vipLevel},
+            vip_start_at = #{vipStartAt},
+            vip_expire_at = #{vipExpireAt},
+            updated_at = NOW()
+        WHERE id = #{id}
+    </update>
+
+    <select id="selectAdminList" resultType="java.util.LinkedHashMap">
+        SELECT id,
+               phone,
+               balance,
+               free_views_remaining AS freeViewsRemaining,
+               vip_level AS vipLevel,
+               vip_start_at AS vipStartAt,
+               vip_expire_at AS vipExpireAt,
+               created_at AS createdAt,
+               updated_at AS updatedAt
+        FROM tw_h5_user
+        <where>
+            <if test="q != null and q != ''">
+                AND phone LIKE CONCAT('%', #{q}, '%')
+            </if>
+        </where>
+        ORDER BY id DESC
+        LIMIT #{offset}, #{limit}
+    </select>
+
+    <select id="countAdminList" resultType="long">
+        SELECT COUNT(1)
+        FROM tw_h5_user
+        <where>
+            <if test="q != null and q != ''">
+                AND phone LIKE CONCAT('%', #{q}, '%')
+            </if>
+        </where>
+    </select>
+
+    <insert id="insertAccountLog">
+        INSERT INTO tw_h5_account_log(user_id, balance_delta, free_views_delta, balance_after, free_views_after, remark,
+                                      admin_username, created_at)
+        VALUES (#{userId}, #{balanceDelta}, #{freeViewsDelta}, #{balanceAfter}, #{freeViewsAfter}, #{remark},
+                #{adminUsername}, NOW())
+    </insert>
 </mapper>

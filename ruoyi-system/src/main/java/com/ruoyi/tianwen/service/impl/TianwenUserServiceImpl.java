@@ -607,6 +607,22 @@ public class TianwenUserServiceImpl implements ITianwenUserService {
         return v;
     }
 
+    @Override
+    public void evictUserCacheById(Long userId) {
+        if (userId == null) {
+            return;
+        }
+        userCache.entrySet().removeIf(entry -> {
+            CachedUser cu = entry.getValue();
+            return cu != null && cu.user != null && userId.equals(cu.user.getId());
+        });
+    }
+
+    @Override
+    public Map<String, Object> buildPublicUser(TianwenH5User user) {
+        return user == null ? null : publicUser(user);
+    }
+
     private Map<String, Object> publicUser(TianwenH5User user) {
         Map<String, Object> m =
                 new LinkedHashMap<>();

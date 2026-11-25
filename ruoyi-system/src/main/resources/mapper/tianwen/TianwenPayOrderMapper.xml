@@ -1,0 +1,155 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ruoyi.tianwen.mapper.TianwenPayOrderMapper">
+
+    <resultMap id="PayOrderMap" type="com.ruoyi.tianwen.domain.TianwenPayOrder">
+        <id property="id" column="id"/>
+        <result property="mchOrderNo" column="mch_order_no"/>
+        <result property="gatewayOrderNo" column="gateway_order_no"/>
+        <result property="userId" column="user_id"/>
+        <result property="orderType" column="order_type"/>
+        <result property="planCode" column="plan_code"/>
+        <result property="title" column="title"/>
+        <result property="recommendationId" column="recommendation_id"/>
+        <result property="vipLevel" column="vip_level"/>
+        <result property="vipDays" column="vip_days"/>
+        <result property="usdAmount" column="usd_amount"/>
+        <result property="cnyAmount" column="cny_amount"/>
+        <result property="chainKey" column="chain_key"/>
+        <result property="coin" column="coin"/>
+        <result property="expectedAmount" column="expected_amount"/>
+        <result property="actualAmount" column="actual_amount"/>
+        <result property="payAddress" column="pay_address"/>
+        <result property="qrContent" column="qr_content"/>
+        <result property="deepLink" column="deep_link"/>
+        <result property="checkoutUrl" column="checkout_url"/>
+        <result property="txHash" column="tx_hash"/>
+        <result property="status" column="status"/>
+        <result property="fulfilled" column="fulfilled"/>
+        <result property="expireAt" column="expire_at"/>
+        <result property="paidAt" column="paid_at"/>
+        <result property="createdAt" column="created_at"/>
+        <result property="updatedAt" column="updated_at"/>
+    </resultMap>
+
+    <update id="ensureTable">
+        CREATE TABLE IF NOT EXISTS tw_h5_pay_order (
+            id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            mch_order_no VARCHAR(64) NOT NULL,
+            gateway_order_no VARCHAR(64) DEFAULT NULL,
+            user_id BIGINT NOT NULL,
+            order_type VARCHAR(24) NOT NULL,
+            plan_code VARCHAR(32) NOT NULL,
+            title VARCHAR(160) NOT NULL,
+            recommendation_id VARCHAR(64) DEFAULT NULL,
+            vip_level INT NOT NULL DEFAULT 0,
+            vip_days INT NOT NULL DEFAULT 0,
+            usd_amount DECIMAL(18,6) NOT NULL,
+            cny_amount DECIMAL(18,2) DEFAULT NULL,
+            chain_key VARCHAR(32) NOT NULL DEFAULT 'auto',
+            coin VARCHAR(24) NOT NULL DEFAULT 'USDT',
+            expected_amount VARCHAR(64) DEFAULT NULL,
+            actual_amount VARCHAR(64) DEFAULT NULL,
+            pay_address VARCHAR(128) DEFAULT NULL,
+            qr_content VARCHAR(512) DEFAULT NULL,
+            deep_link VARCHAR(512) DEFAULT NULL,
+            checkout_url VARCHAR(512) DEFAULT NULL,
+            tx_hash VARCHAR(128) DEFAULT NULL,
+            status VARCHAR(24) NOT NULL DEFAULT 'PENDING',
+            fulfilled TINYINT(1) NOT NULL DEFAULT 0,
+            expire_at BIGINT DEFAULT NULL,
+            paid_at DATETIME DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_mch_order_no (mch_order_no),
+            KEY idx_user_created (user_id, created_at),
+            KEY idx_gateway_order_no (gateway_order_no)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    </update>
+
+    <insert id="insert" parameterType="com.ruoyi.tianwen.domain.TianwenPayOrder" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO tw_h5_pay_order(
+            mch_order_no, gateway_order_no, user_id, order_type, plan_code, title,
+            recommendation_id, vip_level, vip_days, usd_amount, cny_amount,
+            chain_key, coin, expected_amount, pay_address, qr_content, deep_link,
+            checkout_url, status, fulfilled, expire_at, created_at, updated_at
+        )
+        VALUES (
+            #{mchOrderNo}, #{gatewayOrderNo}, #{userId}, #{orderType}, #{planCode}, #{title},
+            #{recommendationId}, COALESCE(#{vipLevel}, 0), COALESCE(#{vipDays}, 0), #{usdAmount}, #{cnyAmount},
+            #{chainKey}, #{coin}, #{expectedAmount}, #{payAddress}, #{qrContent}, #{deepLink},
+            #{checkoutUrl}, COALESCE(#{status}, 'PENDING'), COALESCE(#{fulfilled}, 0), #{expireAt}, NOW(), NOW()
+        )
+    </insert>
+
+    <update id="updateGatewayInfo" parameterType="com.ruoyi.tianwen.domain.TianwenPayOrder">
+        UPDATE tw_h5_pay_order
+        SET gateway_order_no = #{gatewayOrderNo},
+            chain_key = #{chainKey},
+            coin = #{coin},
+            expected_amount = #{expectedAmount},
+            pay_address = #{payAddress},
+            qr_content = #{qrContent},
+            deep_link = #{deepLink},
+            checkout_url = #{checkoutUrl},
+            expire_at = #{expireAt},
+            status = #{status},
+            updated_at = NOW()
+        WHERE mch_order_no = #{mchOrderNo}
+    </update>
+
+    <select id="selectByMchOrderNo" resultMap="PayOrderMap">
+        SELECT *
+        FROM tw_h5_pay_order
+        WHERE mch_order_no = #{mchOrderNo}
+        LIMIT 1
+    </select>
+
+    <select id="selectByUser" resultMap="PayOrderMap">
+        SELECT *
+        FROM tw_h5_pay_order
+        WHERE user_id = #{userId}
+        <if test="statusGroup == 'pending'">
+            AND status = 'PENDING'
+        </if>
+        <if test="statusGroup == 'done'">
+            AND status = 'PAID'
+        </if>
+        ORDER BY id DESC
+        LIMIT #{limit}
+    </select>
+
+    <update id="expireOverdueOrders">
+        UPDATE tw_h5_pay_order
+        SET status = 'EXPIRED',
+            updated_at = NOW()
+        WHERE user_id = #{userId}
+          AND status = 'PENDING'
+          AND expire_at IS NOT NULL
+          AND expire_at &lt; #{nowMs}
+    </update>
+
+    <update id="updateStatus">
+        UPDATE tw_h5_pay_order
+        SET status = #{status},
+            updated_at = NOW()
+        WHERE mch_order_no = #{mchOrderNo}
+          AND status = 'PENDING'
+    </update>
+
+    <update id="markPaidAndFulfill">
+        UPDATE tw_h5_pay_order
+        SET status = 'PAID',
+            fulfilled = 1,
+            gateway_order_no = COALESCE(NULLIF(#{gatewayOrderNo}, ''), gateway_order_no),
+            chain_key = COALESCE(NULLIF(#{chainKey}, ''), chain_key),
+            coin = COALESCE(NULLIF(#{coin}, ''), coin),
+            actual_amount = COALESCE(NULLIF(#{actualAmount}, ''), expected_amount),
+            tx_hash = COALESCE(NULLIF(#{txHash}, ''), tx_hash),
+            paid_at = COALESCE(paid_at, NOW()),
+            updated_at = NOW()
+        WHERE mch_order_no = #{mchOrderNo}
+          AND fulfilled = 0
+    </update>
+
+</mapper>

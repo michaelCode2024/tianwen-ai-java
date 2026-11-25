@@ -154,3 +154,23 @@ tianwen:
     default-model: jiebao
     paid-unlock-amount: '9.90'
     allow-manual-paid-unlock: false
+  pay:
+    gateway-base-url: ${TIANWEN_PAY_GATEWAY_URL:https://pay.spaceiax.com}
+    merchant-key: ${TIANWEN_PAY_MERCHANT_KEY:tianwen_ai}
+    merchant-secret: ${TIANWEN_PAY_MERCHANT_SECRET:}
+    notify-url: ${TIANWEN_PAY_NOTIFY_URL:}
+    return-url: ${TIANWEN_PAY_RETURN_URL:}
+    default-coin: ${TIANWEN_PAY_DEFAULT_COIN:USDT}
+    default-chain: ${TIANWEN_PAY_DEFAULT_CHAIN:auto}
+    expire-seconds: ${TIANWEN_PAY_EXPIRE_SECONDS:1800}
+    unlock-usd-amount: ${TIANWEN_PAY_UNLOCK_USD:1.50}
+    unlock-cny-amount: ${TIANWEN_PAY_UNLOCK_CNY:9.90}
+    vip-usd-amount: ${TIANWEN_PAY_VIP_USD:13.90}
+    vip-cny-amount: ${TIANWEN_PAY_VIP_CNY:98.00}
+    vip-days: ${TIANWEN_PAY_VIP_DAYS:30}
+    svip-usd-amount: ${TIANWEN_PAY_SVIP_USD:41.90}
+    svip-cny-amount: ${TIANWEN_PAY_SVIP_CNY:298.00}
+    svip-days: ${TIANWEN_PAY_SVIP_DAYS:30}
+    supreme-usd-amount: ${TIANWEN_PAY_SUPREME_USD:139.00}
+    supreme-cny-amount: ${TIANWEN_PAY_SUPREME_CNY:998.00}
+    supreme-days: ${TIANWEN_PAY_SUPREME_DAYS:30}
