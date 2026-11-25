@@ -147,7 +147,7 @@
                         AND r.is_latest = 1
                     </when>
                     <when test="q.quick == 'hit'">
-                        AND r.result_status IN (1,4)
+                        AND r.result_status IN (1,3,4)
                     </when>
                     <when test="q.quick == 'finished'">
                         AND r.result_status IN (1,2,3,4,5)
@@ -164,7 +164,7 @@
                         AND r.result_status = 0
                     </when>
                     <when test="q.status == 'hit'">
-                        AND r.result_status IN (1,4)
+                        AND r.result_status IN (1,3,4)
                     </when>
                     <when test="q.status == 'lost'">
                         AND r.result_status IN (2,5)
@@ -221,7 +221,7 @@
             COUNT(1) AS all_count,
             SUM(CASE WHEN r.result_status = 0
                       AND r.is_latest=1 THEN 1 ELSE 0 END) AS pending_count,
-            SUM(CASE WHEN r.result_status IN (1,4) THEN 1 ELSE 0 END) AS hit_count,
+            SUM(CASE WHEN r.result_status IN (1,3,4) THEN 1 ELSE 0 END) AS hit_count,
             SUM(CASE WHEN r.result_status IN (1,2,3,4,5) THEN 1 ELSE 0 END) AS finished_count,
             SUM(CASE WHEN r.result_status = 9
                       OR r.is_latest=0 THEN 1 ELSE 0 END) AS obsolete_count
@@ -239,6 +239,7 @@
         <where>
             AND r.model IN ('jiebao','nami')
             AND r.is_latest = 1
+            AND COALESCE(r.recommend_role, 'primary') = 'primary'
             <if test="q.minRate != null">
                 AND r.rate &gt;= #{q.minRate}
             </if>

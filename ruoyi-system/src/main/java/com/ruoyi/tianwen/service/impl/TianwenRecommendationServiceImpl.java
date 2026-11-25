@@ -320,7 +320,13 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
     db.put("matchId", trim(q.get("match_id")));
     db.put("stage", trim(q.get("stage")));
     db.put("market", trim(q.get("market")));
-    db.put("recommendRole", trim(q.get("recommend_role")));
+    String role = trim(q.get("recommend_role"));
+    if (!admin && role.isEmpty()) {
+      role = "primary";
+    } else if ("all".equalsIgnoreCase(role)) {
+      role = "";
+    }
+    db.put("recommendRole", role);
     db.put("dateFrom", trim(q.get("date_from")));
     db.put("dateTo", trim(q.get("date_to")));
     db.put("status", trim(q.get("status")));
@@ -872,15 +878,15 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
     if ("0".equals(str(m.getOrDefault("is_latest", "1")))) m.put("result_status", 9);
     String s = str(m.getOrDefault("result_status", "0"));
     String label = "待结算", clazz = "pending";
-    if (HIT.contains(s)) {
+    if ("3".equals(s)) {
+      label = "走水";
+      clazz = "push";
+    } else if (HIT.contains(s)) {
       label = "命中";
       clazz = "win";
     } else if (LOST.contains(s)) {
       label = "未中";
       clazz = "lost";
-    } else if ("3".equals(s)) {
-      label = "走水";
-      clazz = "push";
     } else if ("9".equals(s)) {
       label = "作废";
       clazz = "obsolete";

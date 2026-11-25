@@ -225,9 +225,9 @@ public class TianwenAnalyticsServiceImpl
 
     /**
      * 最佳维度：
-     * SQL已经按 hit_rate DESC / settled DESC 排序。
+     * 按 hit_rate DESC, settled DESC 选出最佳项（不依赖 SQL 排序，兼容按区间排序的 rateStats）。
      * 为避免“1场1中=100%”误导，优先选择已结算样本>=3。
-     * 如果全部不到3场，再退回第一项。
+     * 如果全部不到3场，再退回已结算样本>0 的最佳项。
      */
     private Map<String,Object> best(
             List<Map<String,Object>> rows) {
@@ -236,13 +236,54 @@ public class TianwenAnalyticsServiceImpl
             return null;
         }
 
+        Map<String,Object> bestQualified = null;
+        Map<String,Object> bestAny = null;
+
         for (Map<String,Object> row : rows) {
-            if (number(row.get("settled")) >= 3) {
-                return row;
+            if (row == null) {
+                continue;
+            }
+            long settled = number(row.get("settled"));
+            if (settled >= 3 && isBetterStat(row, bestQualified)) {
+                bestQualified = row;
+            }
+            if (settled > 0 && isBetterStat(row, bestAny)) {
+                bestAny = row;
             }
         }
 
-        return rows.get(0);
+        if (bestQualified != null) {
+            return bestQualified;
+        }
+        return bestAny != null ? bestAny : rows.get(0);
+    }
+
+    private boolean isBetterStat(Map<String,Object> candidate, Map<String,Object> currentBest) {
+        if (currentBest == null) {
+            return true;
+        }
+        double candRate = doubleVal(candidate.get("hit_rate"));
+        double bestRate = doubleVal(currentBest.get("hit_rate"));
+        int rateCmp = Double.compare(candRate, bestRate);
+        if (rateCmp != 0) {
+            return rateCmp > 0;
+        }
+        return number(candidate.get("settled")) > number(currentBest.get("settled"));
+    }
+
+    private double doubleVal(Object value) {
+        if (value instanceof Number) {
+            return ((Number) value).doubleValue();
+        }
+        try {
+            if (value == null) {
+                return -1D;
+            }
+            String s = String.valueOf(value).trim();
+            return s.isEmpty() ? -1D : Double.parseDouble(s);
+        } catch (Exception e) {
+            return -1D;
+        }
     }
 
     private QuerySpec parse(
@@ -303,6 +344,17 @@ public class TianwenAnalyticsServiceImpl
                 )
         );
 
+        String role = trim(q.get("recommend_role")).toLowerCase();
+        if (role.isEmpty()) {
+            role = "primary";
+        } else if ("all".equals(role)) {
+            role = "all";
+        }
+        db.put(
+                "recommendRole",
+                role
+        );
+
         db.put(
                 "minRate",
                 decimal(
@@ -333,6 +385,11 @@ public class TianwenAnalyticsServiceImpl
         filters.put(
                 "market",
                 db.get("market")
+        );
+
+        filters.put(
+                "recommendRole",
+                db.get("recommendRole")
         );
 
         filters.put(
