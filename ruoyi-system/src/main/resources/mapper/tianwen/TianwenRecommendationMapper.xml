@@ -346,6 +346,12 @@
         p.p_away,
         p.score_home,
         p.score_away,
+        p.elo_weight,
+        p.pick_market,
+        p.pick_direction,
+        p.pick_handicap,
+        p.pick_odds,
+        p.pick_kelly,
         p.euro_direction,
         p.euro_odds,
         p.euro_prob,
@@ -364,9 +370,63 @@
         p.asia_kelly,
         p.asia_status,
         p.analysis_json,
-        p.final_home_score,
-        p.final_away_score,
+        COALESCE(
+            p.final_home_score,
+            (
+                SELECT p2.final_home_score
+                FROM football_prediction p2
+                WHERE p2.match_id = p.match_id
+                  AND p2.model_platform = p.model_platform
+                  AND p2.final_home_score IS NOT NULL
+                ORDER BY p2.id DESC
+                LIMIT 1
+            )
+        ) AS final_home_score,
+        COALESCE(
+            p.final_away_score,
+            (
+                SELECT p2.final_away_score
+                FROM football_prediction p2
+                WHERE p2.match_id = p.match_id
+                  AND p2.model_platform = p.model_platform
+                  AND p2.final_away_score IS NOT NULL
+                ORDER BY p2.id DESC
+                LIMIT 1
+            )
+        ) AS final_away_score,
         p.result_status,
+        (
+            SELECT r.result_status
+            FROM football_ai_recommend_record r
+            WHERE r.match_id = p.match_id
+              AND r.model = CASE WHEN p.model_platform = 'antscore' THEN 'nami' ELSE 'jiebao' END
+            ORDER BY r.is_latest DESC, r.id DESC
+            LIMIT 1
+        ) AS ranking_status,
+        (
+            SELECT r.market
+            FROM football_ai_recommend_record r
+            WHERE r.match_id = p.match_id
+              AND r.model = CASE WHEN p.model_platform = 'antscore' THEN 'nami' ELSE 'jiebao' END
+            ORDER BY r.is_latest DESC, r.id DESC
+            LIMIT 1
+        ) AS ranking_market,
+        (
+            SELECT r.direction
+            FROM football_ai_recommend_record r
+            WHERE r.match_id = p.match_id
+              AND r.model = CASE WHEN p.model_platform = 'antscore' THEN 'nami' ELSE 'jiebao' END
+            ORDER BY r.is_latest DESC, r.id DESC
+            LIMIT 1
+        ) AS ranking_direction,
+        (
+            SELECT r.handicap
+            FROM football_ai_recommend_record r
+            WHERE r.match_id = p.match_id
+              AND r.model = CASE WHEN p.model_platform = 'antscore' THEN 'nami' ELSE 'jiebao' END
+            ORDER BY r.is_latest DESC, r.id DESC
+            LIMIT 1
+        ) AS ranking_handicap,
         s.stage AS snapshot_stage,
         s.league_name,
         DATE_FORMAT(s.match_time, '%Y-%m-%d %H:%i:%s') AS match_time,
@@ -419,6 +479,19 @@
         ) ranked
         WHERE ranked.replay_rank = 1
         ORDER BY ranked.match_time ASC, ranked.prediction_id DESC
+    </select>
+
+    <select id="selectPredictionDays" resultType="java.util.LinkedHashMap">
+        SELECT
+            DATE_FORMAT(s.match_time, '%Y-%m-%d') AS day,
+            COUNT(DISTINCT p.match_id) AS matches
+        FROM football_prediction p
+        INNER JOIN football_feature_snapshot s ON s.id = p.snapshot_id
+        WHERE p.model_platform = #{platform}
+          AND s.stage IN ('初盘', '即时盘')
+        GROUP BY DATE_FORMAT(s.match_time, '%Y-%m-%d')
+        ORDER BY day DESC
+        LIMIT 90
     </select>
 
 </mapper>

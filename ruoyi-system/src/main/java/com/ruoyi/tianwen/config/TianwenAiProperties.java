@@ -16,6 +16,7 @@ public class TianwenAiProperties {
     private boolean allowManualPaidUnlock = false;
     private String paymentNotifySecret = "";
     private String exportKey = "";
+    private String adminKey = "";
 
     public long getSessionSeconds(){return sessionSeconds;} public void setSessionSeconds(long v){sessionSeconds=v;}
     public int getFreeViewCount(){return freeViewCount;} public void setFreeViewCount(int v){freeViewCount=v;}
@@ -27,4 +28,12 @@ public class TianwenAiProperties {
     public boolean isAllowManualPaidUnlock(){return allowManualPaidUnlock;} public void setAllowManualPaidUnlock(boolean v){allowManualPaidUnlock=v;}
     public String getPaymentNotifySecret(){return paymentNotifySecret;} public void setPaymentNotifySecret(String v){paymentNotifySecret=v;}
     public String getExportKey(){return exportKey;} public void setExportKey(String v){exportKey=v;}
+    public String getAdminKey(){return adminKey;} public void setAdminKey(String v){adminKey=v;}
+
+    public String resolvedAdminKey() {
+        if (adminKey != null && !adminKey.isBlank()) {
+            return adminKey.trim();
+        }
+        return exportKey == null ? "" : exportKey.trim();
+    }
 }

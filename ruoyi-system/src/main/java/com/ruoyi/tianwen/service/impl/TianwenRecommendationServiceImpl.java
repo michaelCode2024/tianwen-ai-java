@@ -411,8 +411,7 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
     List<Map<String, Object>> rows;
     try {
       rows =
-          recommendationMapper.selectPredictionsByDate(
-              platform, day.atStartOfDay(), day.plusDays(1).atStartOfDay());
+          recommendationMapper.selectPredictionsByDate(platform, dayStart(day), dayEnd(day));
     } catch (DataAccessException e) {
       throw new ServiceException("赛前预测还没有写入当前数据库");
     }
@@ -442,8 +441,7 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
     List<Map<String, Object>> rows;
     try {
       rows =
-          recommendationMapper.selectPredictionsByDate(
-              platform, day.atStartOfDay(), day.plusDays(1).atStartOfDay());
+          recommendationMapper.selectPredictionsByDate(platform, dayStart(day), dayEnd(day));
     } catch (DataAccessException e) {
       throw new ServiceException("赛前预测还没有写入当前数据库");
     }
@@ -463,6 +461,123 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
     out.put("count", items.size());
     out.put("note", "这是赛前快照算出的方向，结算状态只描述已经结束的比赛，不代表之后的命中率。");
     return out;
+  }
+
+  @Override
+  public Map<String, Object> adminPredictions(String date, String model) {
+    String platform = TianwenPredictionView.platformOf(model);
+    List<Map<String, Object>> days = predictionDays(platform);
+    String resolved = date;
+    if (resolved == null || resolved.isBlank()) {
+      resolved = latestPredictionDay(days);
+    }
+    Map<String, Object> out = exportPredictions(resolved, model);
+    out.put("days", days);
+    out.put("note", "管理后台完整分析，不受 H5 解锁限制。综合分推荐和赛前三个方向是两套结果。");
+    if (intValue(out.get("count"), 0) == 0 && !days.isEmpty()) {
+      out.put("emptyHint", "这一天没有赛前快照。点上面有场次的日期看历史。");
+    }
+    return out;
+  }
+
+  private List<Map<String, Object>> predictionDays(String platform) {
+    List<Map<String, Object>> rows;
+    try {
+      rows = recommendationMapper.selectPredictionDays(platform);
+    } catch (DataAccessException e) {
+      return List.of();
+    }
+    if (rows == null) {
+      return List.of();
+    }
+    List<Map<String, Object>> days = new ArrayList<>();
+    for (Map<String, Object> row : rows) {
+      String day = str(row.get("day"));
+      if (day.isEmpty()) {
+        continue;
+      }
+      Map<String, Object> item = new LinkedHashMap<>();
+      item.put("day", day);
+      item.put("matches", intValue(row.get("matches"), 0));
+      days.add(item);
+    }
+    return days;
+  }
+
+  private String latestPredictionDay(List<Map<String, Object>> days) {
+    if (days == null || days.isEmpty()) {
+      return LocalDate.now(ZoneId.of("Asia/Shanghai")).toString();
+    }
+    return str(days.get(0).get("day"));
+  }
+
+  @Override
+  public Map<String, Object> adminPredictionDetail(String model, String matchId) {
+    if (matchId == null || matchId.isBlank()) {
+      throw new ServiceException("matchId 不能为空");
+    }
+    String normalized = normalizeModel(model);
+    String id = matchId.trim();
+    Map<String, Object> row = null;
+    try {
+      row =
+          recommendationMapper.selectReplayPrediction(
+              TianwenPredictionView.platformOf(normalized), id);
+    } catch (DataAccessException e) {
+      throw new ServiceException("赛前预测还没有写入当前数据库");
+    }
+    List<Map<String, Object>> rankingRows;
+    try {
+      rankingRows = recommendationMapper.selectMatchCandidates(id, normalized);
+    } catch (DataAccessException e) {
+      rankingRows = List.of();
+    }
+    if (rankingRows == null) {
+      rankingRows = List.of();
+    }
+    if ((row == null || row.isEmpty()) && rankingRows.isEmpty()) {
+      throw new ServiceException("这场还没有赛前分析快照");
+    }
+    List<Map<String, Object>> ranking = new ArrayList<>();
+    for (Map<String, Object> rec : rankingRows) {
+      ranking.add(adminRankingView(rec));
+    }
+    Map<String, Object> out = new LinkedHashMap<>();
+    out.put("code", 200);
+    out.put("model", normalized);
+    out.put("platform", TianwenPredictionView.platformOf(normalized));
+    out.put("item", row == null || row.isEmpty() ? null : TianwenPredictionView.fromRow(row, true));
+    out.put("ranking", ranking);
+    out.put(
+        "note",
+        ranking.isEmpty()
+            ? "这场没有过综合分门槛，所以没有入库推荐。下面是赛前快照的泊松分析。"
+            : "综合分推荐和泊松三个方向是两套结果，不要混成一条命中率。");
+    return out;
+  }
+
+  private Map<String, Object> adminRankingView(Map<String, Object> row) {
+    decorateAndScript(row);
+    Map<String, Object> view = new LinkedHashMap<>();
+    view.put("recommendation_id", row.get("id"));
+    view.put("stage", row.get("stage"));
+    view.put("market", row.get("market"));
+    view.put("direction", row.get("direction"));
+    view.put(
+        "handicap",
+        row.get("display_handicap") != null ? row.get("display_handicap") : row.get("handicap"));
+    view.put("odds", row.get("odds"));
+    view.put("rate", row.get("rate"));
+    view.put("final_score", row.get("final_score"));
+    view.put("recommend_role", row.get("recommend_role"));
+    view.put("resultText", row.get("resultText"));
+    view.put("resultType", row.get("resultType"));
+    view.put("hit", row.get("hit"));
+    view.put("settled", row.get("settled"));
+    view.put("actualScore", row.get("actualScore"));
+    view.put("script", row.get("script"));
+    view.put("create_time", row.get("create_time"));
+    return view;
   }
 
   private Map<String, Object> predictionFor(Map<String, Object> recommendation, boolean allowed) {
@@ -521,6 +636,14 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
     } catch (DateTimeParseException e) {
       throw new ServiceException("date格式应为yyyy-MM-dd");
     }
+  }
+
+  private String dayStart(LocalDate day) {
+    return day.toString() + " 00:00:00";
+  }
+
+  private String dayEnd(LocalDate day) {
+    return day.plusDays(1).toString() + " 00:00:00";
   }
 
   private void decorateResult(Map<String, Object> row) {

@@ -156,3 +156,4 @@ tianwen:
     allow-manual-paid-unlock: false
     payment-notify-secret: ''
     export-key: ''
+    admin-key: ''

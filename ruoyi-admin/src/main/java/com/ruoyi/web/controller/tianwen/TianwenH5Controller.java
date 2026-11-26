@@ -166,6 +166,24 @@ public class TianwenH5Controller {
     return orderService.confirmPaid(orderNo, secret, channel);
   }
 
+  @GetMapping("/admin/predictions")
+  public Map<String, Object> adminPredictions(
+      @RequestParam(required = false) String date,
+      @RequestParam(defaultValue = "jiebao") String model,
+      @RequestHeader(value = "X-Tianwen-Admin-Key", required = false) String key) {
+    requireAdminKey(key);
+    return recommendationService.adminPredictions(date, model);
+  }
+
+  @GetMapping("/admin/predictions/{model}/{matchId}")
+  public Map<String, Object> adminPredictionDetail(
+      @PathVariable String model,
+      @PathVariable String matchId,
+      @RequestHeader(value = "X-Tianwen-Admin-Key", required = false) String key) {
+    requireAdminKey(key);
+    return recommendationService.adminPredictionDetail(model, matchId);
+  }
+
   @GetMapping("/export/predictions")
   public Map<String, Object> exportPredictions(
       @RequestParam(required = false) String date,
@@ -179,6 +197,16 @@ public class TianwenH5Controller {
       throw new ServiceException("导出密钥不正确");
     }
     return recommendationService.exportPredictions(date, model);
+  }
+
+  private void requireAdminKey(String key) {
+    String expected = properties.resolvedAdminKey();
+    if (expected == null || expected.isBlank()) {
+      throw new ServiceException("管理密钥未配置");
+    }
+    if (!sameSecret(expected, key)) {
+      throw new ServiceException("管理密钥不正确");
+    }
   }
 
   private static boolean sameSecret(String expected, String actual) {

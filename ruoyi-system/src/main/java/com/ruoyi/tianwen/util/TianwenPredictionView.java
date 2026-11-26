@@ -62,6 +62,8 @@ public final class TianwenPredictionView {
                 row.get("euro_prob"),
                 row.get("euro_kelly"),
                 row.get("euro_status"),
+                row.get("final_home_score"),
+                row.get("final_away_score"),
                 allowed),
             market(
                 "大小球",
@@ -71,6 +73,8 @@ public final class TianwenPredictionView {
                 row.get("ou_prob"),
                 row.get("ou_kelly"),
                 row.get("ou_status"),
+                row.get("final_home_score"),
+                row.get("final_away_score"),
                 allowed),
             market(
                 "让分",
@@ -80,6 +84,8 @@ public final class TianwenPredictionView {
                 row.get("asia_prob"),
                 row.get("asia_kelly"),
                 row.get("asia_status"),
+                row.get("final_home_score"),
+                row.get("final_away_score"),
                 allowed)));
     if (!allowed) {
       return view;
@@ -89,8 +95,23 @@ public final class TianwenPredictionView {
     view.put("p_away", row.get("p_away"));
     view.put("score_home", row.get("score_home"));
     view.put("score_away", row.get("score_away"));
+    view.put("lambda_home", row.get("lambda_home"));
+    view.put("lambda_away", row.get("lambda_away"));
+    view.put("elo_weight", row.get("elo_weight"));
+    view.put("pick_market", row.get("pick_market"));
+    view.put("pick_direction", row.get("pick_direction"));
+    view.put("pick_handicap", row.get("pick_handicap"));
+    view.put("pick_odds", row.get("pick_odds"));
+    view.put("pick_kelly", row.get("pick_kelly"));
     view.put("final_home_score", row.get("final_home_score"));
     view.put("final_away_score", row.get("final_away_score"));
+    view.put("has_ranking", !text(row.get("recommendation_id")).isBlank());
+    view.put("ranking_status", row.get("ranking_status"));
+    view.put("rankingStatusText", statusText(row.get("ranking_status")));
+    view.put("rankingKind", resultKind(row.get("ranking_status")));
+    view.put("ranking_market", row.get("ranking_market"));
+    view.put("ranking_direction", row.get("ranking_direction"));
+    view.put("ranking_handicap", row.get("ranking_handicap"));
     view.put("analysis", analysis(row.get("analysis_json")));
     return view;
   }
@@ -103,6 +124,8 @@ public final class TianwenPredictionView {
       Object prob,
       Object kelly,
       Object status,
+      Object homeScore,
+      Object awayScore,
       boolean allowed) {
     Map<String, Object> item = new LinkedHashMap<>();
     item.put("label", label);
@@ -116,8 +139,10 @@ public final class TianwenPredictionView {
     item.put("odds", odds);
     item.put("prob", prob);
     item.put("kelly", kelly);
-    item.put("status", status == null ? 0 : status);
-    item.put("statusText", statusText(status));
+    int settledStatus = settleIfNeeded(label, direction, handicap, status, homeScore, awayScore);
+    item.put("status", settledStatus);
+    item.put("statusText", statusText(settledStatus));
+    item.put("resultKind", resultKind(settledStatus));
     return item;
   }
 
@@ -153,13 +178,116 @@ public final class TianwenPredictionView {
 
   public static String statusText(Object status) {
     return switch (text(status)) {
-      case "1" -> "全赢";
-      case "2" -> "全输";
+      case "1" -> "命中";
+      case "2" -> "未中";
       case "3" -> "走水";
-      case "4" -> "半赢";
+      case "4" -> "半中";
       case "5" -> "半输";
       default -> "待结算";
     };
+  }
+
+  public static String resultKind(Object status) {
+    return switch (text(status)) {
+      case "1", "4" -> "hit";
+      case "2", "5" -> "miss";
+      case "3" -> "push";
+      default -> "pending";
+    };
+  }
+
+  private static int settleIfNeeded(
+      String label, Object direction, Object handicap, Object status, Object homeScore, Object awayScore) {
+    int current = parseInt(status);
+    if (SETTLED.contains(text(status))) {
+      return current;
+    }
+    Integer home = parseScore(homeScore);
+    Integer away = parseScore(awayScore);
+    if (home == null || away == null || direction == null || text(direction).isBlank()) {
+      return current;
+    }
+    return settlePick(label, text(direction), handicap, home, away);
+  }
+
+  private static int settlePick(String market, String direction, Object handicap, int home, int away) {
+    if ("欧赔".equals(market)) {
+      String actual = home > away ? "主胜" : home == away ? "平局" : "客胜";
+      return direction.equals(actual) ? 1 : 2;
+    }
+    Double line = parseLine(handicap);
+    if (line == null) {
+      return 0;
+    }
+    if ("让分".equals(market) || "亚盘".equals(market)) {
+      double margin = (home - away) + line;
+      if ("主负盘".equals(direction) || "客胜盘".equals(direction)) {
+        margin = -margin;
+      }
+      return quarterStatus(margin);
+    }
+    if ("大小球".equals(market)) {
+      double margin = (home + away) - line;
+      if ("小球".equals(direction)) {
+        margin = -margin;
+      }
+      return quarterStatus(margin);
+    }
+    return 0;
+  }
+
+  private static int quarterStatus(double value) {
+    double number = Math.round(value * 1_000_000d) / 1_000_000d;
+    if (Math.abs(number) < 1e-9) {
+      return 3;
+    }
+    double frac = Math.abs(number) % 1;
+    if (frac == 0.0 || frac == 0.5) {
+      return number > 0 ? 1 : 2;
+    }
+    if (number > 0) {
+      return Math.abs(number) < 0.5 ? 4 : 1;
+    }
+    return Math.abs(number) < 0.5 ? 5 : 2;
+  }
+
+  private static int parseInt(Object value) {
+    if (value instanceof Number number) {
+      return number.intValue();
+    }
+    try {
+      return Integer.parseInt(text(value));
+    } catch (Exception e) {
+      return 0;
+    }
+  }
+
+  private static Integer parseScore(Object value) {
+    if (value == null || text(value).isBlank() || "null".equals(text(value))) {
+      return null;
+    }
+    if (value instanceof Number number) {
+      return number.intValue();
+    }
+    try {
+      return (int) Math.round(Double.parseDouble(text(value)));
+    } catch (Exception e) {
+      return null;
+    }
+  }
+
+  private static Double parseLine(Object value) {
+    if (value == null || text(value).isBlank() || "null".equals(text(value))) {
+      return null;
+    }
+    if (value instanceof Number number) {
+      return number.doubleValue();
+    }
+    try {
+      return Double.parseDouble(text(value));
+    } catch (Exception e) {
+      return null;
+    }
   }
 
   private static String text(Object value) {

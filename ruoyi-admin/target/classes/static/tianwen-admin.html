@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>天问 AI 分析后台</title>
+  <style>
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f8f6; color: #24352b; }
+    .wrap { max-width: 880px; margin: 0 auto; padding: 20px 16px 48px; }
+    h1 { margin: 0 0 8px; font-size: 22px; }
+    .sub { color: #6b7c73; margin-bottom: 16px; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
+    input, select, button { font: inherit; padding: 10px 12px; border: 1px solid #d7e4dc; border-radius: 10px; background: #fff; }
+    input[type="password"], input[type="date"] { flex: 1; min-width: 180px; }
+    button { background: #17bf65; color: #fff; border: 0; font-weight: 700; cursor: pointer; }
+    button.ghost { background: #fff; color: #24352b; border: 1px solid #d7e4dc; }
+    .tab { padding: 8px 16px; border-radius: 999px; border: 1px solid #d7e4dc; background: #fff; cursor: pointer; }
+    .tab.on { background: #17bf65; color: #fff; border-color: #17bf65; }
+    .card { background: #fff; border: 1px solid #e1ebe5; border-radius: 14px; padding: 16px; margin-bottom: 12px; }
+    .card.match { cursor: pointer; }
+    .meta { color: #87958d; font-size: 13px; }
+    .teams { font-size: 18px; font-weight: 800; margin: 8px 0; }
+    .line, .prob { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid #edf2ef; }
+    .tag { display: inline-block; margin-right: 8px; padding: 2px 8px; border-radius: 999px; background: #eef4f0; color: #6b7c73; font-size: 12px; }
+    .tag.on { background: #e4f8ec; color: #129a4e; }
+    .empty, .err { padding: 28px 8px; text-align: center; color: #87958d; }
+    .err { color: #c24141; }
+    .body { white-space: pre-wrap; color: #31443a; }
+    .back { margin-bottom: 12px; }
+    h2 { font-size: 16px; margin: 0 0 10px; }
+  </style>
+</head>
+<body>
+  <div class="wrap" id="app"></div>
+  <script>
+    const KEY = "tianwen_admin_key";
+    const state = {
+      key: localStorage.getItem(KEY) || "",
+      date: new Date().toISOString().slice(0, 10),
+      model: "jiebao",
+      items: [],
+      loading: false,
+      error: "",
+      note: "",
+      detail: null,
+    };
+
+    function $(html) { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content; }
+    function esc(v) { return String(v ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+    function percent(v) { const n = Number(v); return Number.isFinite(n) ? (Math.round(n * 1000) / 10) + "%" : "-"; }
+    function marketText(m) {
+      if (!m || !m.direction) return "暂无盘口";
+      return m.direction + (m.handicap == null || m.handicap === "" ? "" : " " + m.handicap);
+    }
+    function rankText(r) {
+      if (!r || !r.direction) return "暂无方向";
+      return r.direction + (r.handicap == null || r.handicap === "" ? "" : " " + r.handicap);
+    }
+
+    async function api(path) {
+      const res = await fetch(path, { headers: { "X-Tianwen-Admin-Key": state.key } });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || (data.code && Number(data.code) !== 200)) {
+        throw new Error(data.msg || data.error || "请求失败");
+      }
+      return data;
+    }
+
+    async function loadList() {
+      state.detail = null;
+      if (!state.key.trim()) {
+        state.items = [];
+        state.error = "先填写管理密钥";
+        render();
+        return;
+      }
+      state.loading = true;
+      state.error = "";
+      render();
+      try {
+        const data = await api(`/api/h5/admin/predictions?date=${encodeURIComponent(state.date)}&model=${encodeURIComponent(state.model)}`);
+        state.items = data.items || [];
+        state.note = data.note || "";
+      } catch (e) {
+        state.items = [];
+        state.error = e.message;
+      } finally {
+        state.loading = false;
+        render();
+      }
+    }
+
+    async function loadDetail(matchId) {
+      state.loading = true;
+      state.error = "";
+      render();
+      try {
+        state.detail = await api(`/api/h5/admin/predictions/${encodeURIComponent(state.model)}/${encodeURIComponent(matchId)}`);
+      } catch (e) {
+        state.detail = null;
+        state.error = e.message;
+      } finally {
+        state.loading = false;
+        render();
+      }
+    }
+
+    function render() {
+      const root = document.getElementById("app");
+      if (state.detail) {
+        const item = state.detail.item || {};
+        const ranking = state.detail.ranking || [];
+        const header = item.match_id ? item : (ranking[0] || {});
+        const steps = (item.analysis && item.analysis.steps) || [];
+        root.replaceChildren($(`
+          <button class="ghost back" id="back">返回列表</button>
+          <div class="card">
+            <div class="meta">${esc(header.league_name || "-")} · ${esc(header.match_time || "-")}</div>
+            <div class="teams">${esc(header.home_team || "-")} vs ${esc(header.guest_team || "-")}</div>
+            <div class="meta">${state.model === "nami" ? "纳米" : "捷报"} · ${esc(item.model_version || "-")} · ${esc(item.stage || "-")}</div>
+            ${state.detail.note ? `<div class="meta" style="margin-top:8px">${esc(state.detail.note)}</div>` : ""}
+          </div>
+          <div class="card">
+            <h2>综合分推荐过程</h2>
+            ${ranking.length ? ranking.map(r => `
+              <div class="line"><span>${esc(r.stage || "-")} · ${esc(r.market || "-")}</span><strong>${esc(rankText(r))}</strong></div>
+              <div class="meta">支持率 ${esc(r.rate || "-")} · 综合分 ${esc(r.final_score || "-")} · 赔率 ${esc(r.odds || "-")}</div>
+              <div class="meta">${esc((r.result && r.result.label) || "待结算")} · ${esc(r.recommend_role === "primary" ? "主推" : (r.recommend_role || "推荐"))}</div>
+            `).join("") : `<div class="meta">这场没有过综合分门槛，所以没有入库推荐。</div>`}
+          </div>
+          ${item.match_id ? `
+            <div class="card">
+              <h2>泊松赛前三个方向</h2>
+              <div class="prob"><span>主胜 ${percent(item.p_home)}</span><span>平局 ${percent(item.p_draw)}</span><span>客胜 ${percent(item.p_away)}</span></div>
+              <div class="meta">参考比分 ${esc((item.score_home ?? "-") + "-" + (item.score_away ?? "-"))} · 期望进球 ${esc(item.lambda_home || "-")} / ${esc(item.lambda_away || "-")} · Elo权重 ${esc(item.elo_weight || "-")}</div>
+            </div>
+            ${(item.markets || []).map(m => `
+              <div class="card">
+                <div class="line"><span>${esc(m.label)}</span><strong>${esc(marketText(m))}</strong></div>
+                <div class="meta">赔率 ${esc(m.odds || "-")} · 概率 ${percent(m.prob)} · 凯利 ${esc(m.kelly || "-")}</div>
+                <div class="meta">${esc(m.statusText || "待结算")}</div>
+              </div>
+            `).join("")}
+            ${steps.map(s => `
+              <div class="card"><h2>${esc(s.name || "步骤")}</h2><div class="body">${esc(s.detail || s.body || s.text || "-")}</div></div>
+            `).join("")}
+          ` : `<div class="card"><div class="meta">这场还没有赛前快照。</div></div>`}
+        `));
+        root.querySelector("#back").onclick = () => { state.detail = null; render(); };
+        return;
+      }
+
+      root.replaceChildren($(`
+        <h1>天问 AI 分析后台</h1>
+        <p class="sub">按模型查看每场赛事的综合分推荐和泊松分析过程，不受用户解锁限制。</p>
+        <div class="row">
+          <input id="key" type="password" placeholder="管理密钥" value="${esc(state.key)}" />
+          <input id="date" type="date" value="${esc(state.date)}" />
+          <button id="load">读取</button>
+        </div>
+        <div class="row">
+          <span class="tab ${state.model === "jiebao" ? "on" : ""}" data-model="jiebao">捷报</span>
+          <span class="tab ${state.model === "nami" ? "on" : ""}" data-model="nami">纳米</span>
+        </div>
+        ${state.note ? `<p class="sub">${esc(state.note)}</p>` : ""}
+        ${state.loading ? `<div class="empty">正在读取分析...</div>` : ""}
+        ${state.error ? `<div class="err">${esc(state.error)}</div>` : ""}
+        ${!state.loading && !state.error && !state.items.length ? `<div class="empty">这一天还没有赛前快照</div>` : ""}
+        <div id="list"></div>
+      `));
+      root.querySelector("#key").onblur = e => { state.key = e.target.value; localStorage.setItem(KEY, state.key); };
+      root.querySelector("#date").onchange = e => { state.date = e.target.value; loadList(); };
+      root.querySelector("#load").onclick = () => {
+        state.key = root.querySelector("#key").value;
+        localStorage.setItem(KEY, state.key);
+        loadList();
+      };
+      root.querySelectorAll(".tab").forEach(el => el.onclick = () => { state.model = el.dataset.model; loadList(); });
+      const list = root.querySelector("#list");
+      state.items.forEach(item => {
+        const card = document.createElement("div");
+        card.className = "card match";
+        card.innerHTML = `
+          <div class="meta">${esc(item.league_name || "-")} · ${esc(item.match_time || "-")} · ${esc(item.model_version || "-")}</div>
+          <div class="teams">${esc(item.home_team || "-")} vs ${esc(item.guest_team || "-")}</div>
+          <div><span class="tag ${item.has_ranking ? "on" : ""}">${item.has_ranking ? "已有综合分推荐" : "仅赛前分析"}</span><span class="tag">${esc(item.stage || "赛前")}</span></div>
+          ${(item.markets || []).map(m => `<div class="line"><span>${esc(m.label)}</span><strong>${esc(marketText(m))}</strong></div>`).join("")}
+        `;
+        card.onclick = () => loadDetail(item.match_id);
+        list.appendChild(card);
+      });
+    }
+
+    render();
+    if (state.key) loadList();
+  </script>
+</body>
+</html>

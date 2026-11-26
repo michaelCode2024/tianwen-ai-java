@@ -53,4 +53,19 @@ public class TianwenAdminController {
     public Map<String,Object> reset(@RequestBody Map<String,Object> body) {
         return recommendationService.resetOverride(String.valueOf(body.getOrDefault("recommendationId", "")));
     }
+
+    @PreAuthorize("@ss.hasPermi('tianwen:recommend:list')")
+    @GetMapping("/predictions")
+    public Map<String, Object> predictions(
+            @RequestParam(required = false) String date,
+            @RequestParam(defaultValue = "jiebao") String model) {
+        return recommendationService.adminPredictions(date, model);
+    }
+
+    @PreAuthorize("@ss.hasPermi('tianwen:recommend:list')")
+    @GetMapping("/predictions/{model}/{matchId}")
+    public Map<String, Object> predictionDetail(
+            @PathVariable String model, @PathVariable String matchId) {
+        return recommendationService.adminPredictionDetail(model, matchId);
+    }
 }

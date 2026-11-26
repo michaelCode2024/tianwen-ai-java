@@ -404,3 +404,9 @@
 /ruoyi-system/target/maven-status/maven-compiler-plugin/compile/default-compile/createdFiles.lst
 /ruoyi-system/target/maven-status/maven-compiler-plugin/compile/default-compile/inputFiles.lst
 /ruoyi-system/target/ruoyi-system-3.9.2.jar
+/ruoyi-system/target/classes/com/ruoyi/tianwen/mapper/TianwenOrderMapper.class
+/ruoyi-system/target/classes/com/ruoyi/tianwen/service/impl/TianwenOrderService$VipPlan.class
+/ruoyi-system/target/classes/com/ruoyi/tianwen/service/impl/TianwenOrderService.class
+/ruoyi-system/target/classes/com/ruoyi/tianwen/util/TianwenPredictionView$1.class
+/ruoyi-system/target/classes/com/ruoyi/tianwen/util/TianwenPredictionView.class
+/ruoyi-system/target/classes/mapper/tianwen/TianwenOrderMapper.xml

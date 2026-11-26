@@ -155,10 +155,22 @@ public class TianwenOrderService {
     view.put("payChannel", order.get("pay_channel"));
     view.put("createdAt", order.get("created_at"));
     view.put("paidAt", order.get("paid_at"));
+    view.put("waitingNotify", !"paid".equals(text(order.get("status"))));
+    view.put("notifyConfigured", notifyConfigured());
     Map<String, Object> out = new LinkedHashMap<>();
     out.put("code", 200);
     out.put("order", view);
+    out.put(
+        "payHint",
+        notifyConfigured()
+            ? "订单不会在页面里自行改成已支付。支付渠道用回调密钥打 notify 接口后，这里才会变成已支付。"
+            : "支付回调密钥还没配，微信/支付宝渠道现在接不上。页面只会轮询订单状态。");
     return out;
+  }
+
+  private boolean notifyConfigured() {
+    String secret = properties.getPaymentNotifySecret();
+    return secret != null && !secret.isBlank();
   }
 
   private String newOrderNo() {
@@ -172,7 +184,15 @@ public class TianwenOrderService {
     if (left.isEmpty()) {
       return false;
     }
-    return MessageDigest.isEqual(left.getBytes(StandardCharsets.UTF_8), right.getBytes(StandardCharsets.UTF_8));
+    return MessageDigest.isEqual(sha256(left), sha256(right));
+  }
+
+  private static byte[] sha256(String value) {
+    try {
+      return MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
+    } catch (Exception e) {
+      return new byte[32];
+    }
   }
 
   private static String channelText(String channel) {
