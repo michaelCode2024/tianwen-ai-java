@@ -31,6 +31,18 @@
         WHERE user_id = #{userId}
     </select>
 
+    <select id="selectUnlockedMatchIds" resultType="java.lang.String">
+        SELECT DISTINCT r.match_id
+        FROM tw_h5_recommend_unlock u
+        INNER JOIN football_ai_recommend_record r
+            ON CAST(r.id AS CHAR) = u.recommendation_id
+        WHERE u.user_id = #{userId}
+          AND r.match_id IN
+        <foreach collection="matchIds" item="matchId" open="(" separator="," close=")">
+            #{matchId}
+        </foreach>
+    </select>
+
     <insert id="insert"
             parameterType="com.ruoyi.tianwen.domain.TianwenUnlock"
             useGeneratedKeys="true"

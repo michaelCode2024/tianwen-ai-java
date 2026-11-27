@@ -154,6 +154,9 @@ tianwen:
     default-model: jiebao
     paid-unlock-amount: '9.90'
     allow-manual-paid-unlock: false
+    payment-notify-secret: ''
+    export-key: ''
+    admin-key: ''
   pay:
     gateway-base-url: ${TIANWEN_PAY_GATEWAY_URL:https://pay.spaceiax.com}
     merchant-key: ${TIANWEN_PAY_MERCHANT_KEY:tianwen_ai}

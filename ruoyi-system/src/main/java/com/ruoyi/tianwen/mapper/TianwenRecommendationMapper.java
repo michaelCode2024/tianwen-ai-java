@@ -39,4 +39,17 @@ public interface TianwenRecommendationMapper {
             @Param("matchId") String matchId,
             @Param("model") String model
     );
+
+    Map<String, Object> selectReplayPrediction(
+            @Param("platform") String platform,
+            @Param("matchId") String matchId
+    );
+
+    List<Map<String, Object>> selectPredictionsByDate(
+            @Param("platform") String platform,
+            @Param("dayStart") String dayStart,
+            @Param("dayEnd") String dayEnd
+    );
+
+    List<Map<String, Object>> selectPredictionDays(@Param("platform") String platform);
 }

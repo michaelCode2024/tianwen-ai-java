@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>天问 AI 分析后台</title>
+  <style>
+    :root {
+      --bg: #f3f5f7;
+      --card: #fff;
+      --line: #e4e8ec;
+      --ink: #1b2430;
+      --muted: #6b7785;
+      --green: #0f9d58;
+      --red: #d93025;
+      --wait: #5f6b76;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; background: var(--bg); color: var(--ink); }
+    body { font: 13px/1.45 -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif; }
+    .bar {
+      position: sticky; top: 0; z-index: 5;
+      background: #fff; border-bottom: 1px solid var(--line); padding: 12px 18px;
+    }
+    .bar-inner { max-width: 1280px; margin: 0 auto; }
+    h1 { margin: 0; font-size: 18px; }
+    .sub { margin: 4px 0 10px; color: var(--muted); }
+    .tools, .days, .stats, .filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .field { flex: 1; min-width: 160px; background: #f7f9fb; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+    .field span { display: block; color: var(--muted); font-size: 11px; }
+    .field input { width: 100%; border: 0; outline: 0; background: transparent; font: inherit; }
+    button, .tab, .day, .filter {
+      border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 7px 12px; cursor: pointer; font: inherit;
+    }
+    button.primary { background: #111827; color: #fff; border-color: #111827; font-weight: 700; }
+    .tab.on, .day.on, .filter.on { background: #111827; color: #fff; border-color: #111827; }
+    .stat { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; min-width: 88px; }
+    .stat b { display: block; font-size: 18px; }
+    .stat span { color: var(--muted); font-size: 12px; }
+    .wrap { max-width: 1280px; margin: 0 auto; padding: 12px 18px 40px; }
+    .table-wrap { background: #fff; border: 1px solid var(--line); border-radius: 10px; overflow: auto; }
+    table { width: 100%; border-collapse: collapse; min-width: 980px; }
+    th { position: sticky; top: 0; background: #f8fafc; text-align: left; color: var(--muted); font-weight: 600; padding: 10px; border-bottom: 1px solid var(--line); }
+    td { padding: 10px; border-bottom: 1px solid #eef1f4; vertical-align: top; }
+    tr { cursor: pointer; }
+    tr:hover { background: #f7fbf8; }
+    tr.on { background: #eef7f1; }
+    .teams { font-weight: 700; }
+    .league { color: var(--muted); font-size: 12px; }
+    .score { font-weight: 800; font-variant-numeric: tabular-nums; }
+    .pick { display: flex; flex-direction: column; gap: 4px; }
+    .badge { display: inline-block; width: fit-content; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+    .hit { background: #e6f4ea; color: var(--green); }
+    .miss { background: #fce8e6; color: var(--red); }
+    .push { background: #eef1f4; color: #3c4a57; }
+    .pending { background: #f3f4f6; color: var(--wait); }
+    .empty, .err { padding: 36px 12px; text-align: center; color: var(--muted); }
+    .err { color: var(--red); }
+    .sheet {
+      position: fixed; inset: 0; z-index: 20; display: none;
+      background: rgba(17, 24, 39, .35);
+    }
+    .sheet.open { display: block; }
+    .sheet-body {
+      position: absolute; top: 0; right: 0; height: 100%; width: min(560px, 100%);
+      background: #fff; overflow: auto; padding: 18px 18px 48px;
+      box-shadow: -8px 0 24px rgba(0,0,0,.12);
+    }
+    .sheet-top { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin-bottom: 14px; }
+    .close { min-width: 64px; }
+    .block { border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-bottom: 10px; }
+    .block h3 { margin: 0 0 8px; font-size: 14px; }
+    .bar-row { display: grid; grid-template-columns: 42px 1fr 52px; gap: 8px; align-items: center; margin: 6px 0; }
+    .hbar { height: 6px; background: #edf1f4; border-radius: 99px; overflow: hidden; }
+    .hbar i { display: block; height: 100%; background: var(--green); }
+    .step { padding: 8px 0; border-top: 1px solid var(--line); }
+    .step b { display: block; font-size: 12px; }
+    .muted { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header class="bar">
+    <div class="bar-inner">
+      <h1>天问 AI 分析后台</h1>
+      <p class="sub">按日期看赛果。点一场会从右侧弹出分析，不跟着列表往下跑。</p>
+      <div class="tools">
+        <label class="field"><span>管理密钥</span><input id="key" type="password" /></label>
+        <label class="field"><span>搜索球队 / 联赛</span><input id="q" type="search" placeholder="例如 阿尔乌拉" /></label>
+        <span class="tab" data-model="jiebao">捷报</span>
+        <span class="tab" data-model="nami">纳米</span>
+        <button class="primary" id="load">读取历史</button>
+      </div>
+    </div>
+  </header>
+  <div class="wrap">
+    <div class="days" id="days"></div>
+    <div class="stats" id="stats"></div>
+    <div class="filters" id="filters"></div>
+    <div id="flash"></div>
+    <div class="table-wrap" id="list"></div>
+  </div>
+  <div class="sheet" id="sheet">
+    <div class="sheet-body" id="panel"></div>
+  </div>
+  <script>
+    const KEY = "tianwen_admin_key";
+    const state = {
+      key: localStorage.getItem(KEY) || "",
+      date: "",
+      model: "jiebao",
+      q: "",
+      filter: "all",
+      items: [],
+      days: [],
+      loading: false,
+      error: "",
+      emptyHint: "",
+      detail: null,
+      selectedId: "",
+    };
+
+    function esc(v) {
+      return String(v ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    }
+    function percent(v) {
+      const n = Number(v);
+      return Number.isFinite(n) ? (Math.round(n * 1000) / 10) + "%" : "-";
+    }
+    function pctWidth(v) {
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.max(2, Math.min(100, Math.round(n * 100))) : 0;
+    }
+    function marketText(m) {
+      if (!m || !m.direction) return "暂无";
+      return m.direction + (m.handicap == null || m.handicap === "" ? "" : " " + m.handicap);
+    }
+    function rankText(r) {
+      if (!r || !r.direction) return "暂无方向";
+      return r.direction + (r.handicap == null || r.handicap === "" ? "" : " " + r.handicap);
+    }
+    function kindOf(m) {
+      return (m && m.resultKind) || "pending";
+    }
+    function kindLabel(kind, fallback) {
+      return ({ hit: "命中", miss: "未中", push: "走水", pending: "待结算" })[kind] || fallback || "待结算";
+    }
+    function scoreText(item) {
+      if (item.final_home_score == null || item.final_away_score == null || item.final_home_score === "") return "-";
+      return item.final_home_score + "-" + item.final_away_score;
+    }
+    function itemKinds(item) {
+      const kinds = (item.markets || []).map(kindOf);
+      if (item.has_ranking) kinds.push(item.rankingKind || "pending");
+      return kinds;
+    }
+    function filtered() {
+      const q = state.q.trim().toLowerCase();
+      return state.items.filter(item => {
+        const text = [item.home_team, item.guest_team, item.league_name].join(" ").toLowerCase();
+        if (q && !text.includes(q)) return false;
+        if (state.filter === "all") return true;
+        return itemKinds(item).includes(state.filter);
+      });
+    }
+    function summarize(items) {
+      let settled = 0, hit = 0, miss = 0, push = 0, pending = 0;
+      items.forEach(item => {
+        (item.markets || []).forEach(m => {
+          if (!m.available) return;
+          const kind = kindOf(m);
+          if (kind === "hit") { hit++; settled++; }
+          else if (kind === "miss") { miss++; settled++; }
+          else if (kind === "push") { push++; settled++; }
+          else pending++;
+        });
+      });
+      return { settled, hit, miss, push, pending, rate: settled ? Math.round((hit / settled) * 1000) / 10 : 0 };
+    }
+    async function api(path) {
+      const res = await fetch(path, { headers: { "X-Tianwen-Admin-Key": state.key } });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || (data.code && Number(data.code) !== 200)) throw new Error(data.msg || data.error || "请求失败");
+      return data;
+    }
+    async function loadList(date) {
+      if (!state.key.trim()) {
+        state.items = [];
+        state.days = [];
+        state.error = "先填写管理密钥";
+        render();
+        return;
+      }
+      if (date !== undefined) state.date = date;
+      state.loading = true;
+      state.error = "";
+      render();
+      try {
+        const query = [`model=${encodeURIComponent(state.model)}`];
+        if (state.date) query.push(`date=${encodeURIComponent(state.date)}`);
+        const data = await api(`/api/h5/admin/predictions?${query.join("&")}`);
+        state.items = data.items || [];
+        state.days = data.days || [];
+        state.date = data.date || state.date;
+        state.emptyHint = data.emptyHint || "";
+        if (state.selectedId && !state.items.some(item => String(item.match_id) === String(state.selectedId))) {
+          closeSheet();
+        }
+      } catch (e) {
+        state.items = [];
+        state.error = e.message;
+      } finally {
+        state.loading = false;
+        render();
+      }
+    }
+    async function loadDetail(matchId) {
+      state.selectedId = matchId;
+      markSelected();
+      state.loading = true;
+      openSheet(`<div class="empty">正在读取分析...</div>`);
+      try {
+        state.detail = await api(`/api/h5/admin/predictions/${encodeURIComponent(state.model)}/${encodeURIComponent(matchId)}`);
+        state.error = "";
+      } catch (e) {
+        state.detail = null;
+        state.error = e.message;
+      } finally {
+        state.loading = false;
+        renderDrawer();
+      }
+    }
+    function closeSheet() {
+      state.selectedId = "";
+      state.detail = null;
+      document.getElementById("sheet").classList.remove("open");
+      markSelected();
+    }
+    function openSheet(html) {
+      document.getElementById("sheet").classList.add("open");
+      document.getElementById("panel").innerHTML = html;
+    }
+    function markSelected() {
+      document.querySelectorAll("tr[data-id]").forEach(el => {
+        el.classList.toggle("on", el.dataset.id === String(state.selectedId));
+      });
+    }
+    function bindChrome() {
+      const key = document.getElementById("key");
+      const q = document.getElementById("q");
+      key.value = state.key;
+      q.value = state.q;
+      key.onblur = () => { state.key = key.value; localStorage.setItem(KEY, state.key); };
+      q.oninput = () => { state.q = q.value; renderList(); renderStats(); };
+      document.getElementById("load").onclick = () => {
+        state.key = key.value;
+        localStorage.setItem(KEY, state.key);
+        loadList("");
+      };
+      document.querySelectorAll(".tab").forEach(el => {
+        el.classList.toggle("on", el.dataset.model === state.model);
+        el.onclick = () => { state.model = el.dataset.model; closeSheet(); loadList(""); };
+      });
+      document.getElementById("sheet").onclick = e => {
+        if (e.target.id === "sheet") closeSheet();
+      };
+      document.onkeydown = e => { if (e.key === "Escape") closeSheet(); };
+    }
+    function renderStats() {
+      const items = filtered();
+      const s = summarize(items);
+      document.getElementById("stats").innerHTML = `
+        <div class="stat"><b>${items.length}</b><span>${state.date || "-"} 场次</span></div>
+        <div class="stat"><b>${s.settled}</b><span>已结算玩法</span></div>
+        <div class="stat"><b>${s.hit}</b><span>命中</span></div>
+        <div class="stat"><b>${s.miss}</b><span>未中</span></div>
+        <div class="stat"><b>${s.push}</b><span>走水</span></div>
+        <div class="stat"><b>${s.settled ? s.rate + "%" : "-"}</b><span>命中率</span></div>
+      `;
+      document.getElementById("filters").innerHTML = [
+        ["all", "全部"], ["hit", "命中"], ["miss", "未中"], ["push", "走水"], ["pending", "待结算"]
+      ].map(([id, label]) => `<span class="filter ${state.filter === id ? "on" : ""}" data-filter="${id}">${label}</span>`).join("");
+      document.querySelectorAll(".filter").forEach(el => el.onclick = () => {
+        state.filter = el.dataset.filter;
+        renderList();
+        renderStats();
+      });
+    }
+    function renderDays() {
+      document.getElementById("days").innerHTML = state.days.map(d => `
+        <span class="day ${d.day === state.date ? "on" : ""}" data-day="${esc(d.day)}">${esc(d.day.slice(5))} · ${esc(d.matches)}场</span>
+      `).join("");
+      document.querySelectorAll(".day").forEach(el => el.onclick = () => loadList(el.dataset.day));
+    }
+    function marketCell(m) {
+      if (!m || !m.available) return `<span class="muted">暂无</span>`;
+      return `<div class="pick"><b>${esc(marketText(m))}</b><span class="badge ${kindOf(m)}">${esc(m.statusText || kindLabel(kindOf(m)))}</span></div>`;
+    }
+    function rankingCell(item) {
+      if (!item.has_ranking) return `<span class="muted">无推荐</span>`;
+      const pick = (item.ranking_direction || "") + (item.ranking_handicap == null || item.ranking_handicap === "" ? "" : " " + item.ranking_handicap);
+      return `<div class="pick"><b>${esc((item.ranking_market || "综合分") + (pick ? " " + pick : ""))}</b><span class="badge ${item.rankingKind || "pending"}">${esc(item.rankingStatusText || "待结算")}</span></div>`;
+    }
+    function renderList() {
+      const root = document.getElementById("list");
+      const items = filtered();
+      document.getElementById("flash").innerHTML = state.error ? `<div class="err">${esc(state.error)}</div>` : "";
+      if (state.loading && !state.items.length) {
+        root.innerHTML = `<div class="empty">正在读取历史分析...</div>`;
+        return;
+      }
+      if (!items.length) {
+        root.innerHTML = `<div class="empty">${esc(state.emptyHint || "这一天还没有赛前快照")}</div>`;
+        return;
+      }
+      root.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>时间</th><th>对阵</th><th>比分</th><th>欧赔</th><th>大小球</th><th>让分</th><th>综合分推荐</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${items.map(item => {
+              const markets = item.markets || [];
+              return `<tr data-id="${esc(item.match_id)}" class="${String(item.match_id) === String(state.selectedId) ? "on" : ""}">
+                <td>${esc((item.match_time || "").slice(11, 16) || "-")}<div class="league">${esc(item.league_name || "-")}</div></td>
+                <td><div class="teams">${esc(item.home_team || "-")} vs ${esc(item.guest_team || "-")}</div><div class="league">${esc(item.stage || "赛前")}</div></td>
+                <td class="score">${esc(scoreText(item))}</td>
+                <td>${marketCell(markets[0])}</td>
+                <td>${marketCell(markets[1])}</td>
+                <td>${marketCell(markets[2])}</td>
+                <td>${rankingCell(item)}</td>
+              </tr>`;
+            }).join("")}
+          </tbody>
+        </table>
+      `;
+      root.querySelectorAll("tr[data-id]").forEach(el => el.onclick = () => loadDetail(el.dataset.id));
+    }
+    function renderDrawer() {
+      if (!state.selectedId && !state.detail) {
+        document.getElementById("sheet").classList.remove("open");
+        return;
+      }
+      if (state.loading && !state.detail) {
+        openSheet(`<div class="empty">正在读取分析...</div>`);
+        return;
+      }
+      const item = (state.detail && state.detail.item) || {};
+      const ranking = (state.detail && state.detail.ranking) || [];
+      const header = item.match_id ? item : (ranking[0] || {});
+      const steps = (item.analysis && item.analysis.steps) || [];
+      openSheet(`
+        <div class="sheet-top">
+          <div>
+            <div class="league">${esc(header.league_name || "-")} · ${esc(header.match_time || "-")}</div>
+            <h2 class="teams" style="margin:6px 0">${esc(header.home_team || "-")} vs ${esc(header.guest_team || "-")}</h2>
+            <div class="score">${esc(scoreText(item))}</div>
+          </div>
+          <button class="close" id="closeSheet">关闭</button>
+        </div>
+        ${state.error ? `<div class="err">${esc(state.error)}</div>` : ""}
+        <div class="block">
+          <h3>赛前三个方向</h3>
+          ${(item.markets || []).map(m => `
+            <div style="display:flex;justify-content:space-between;gap:8px;margin:8px 0">
+              <span>${esc(m.label)} · ${esc(marketText(m))}</span>
+              <span class="badge ${kindOf(m)}">${esc(m.statusText || "待结算")}</span>
+            </div>
+            <div class="muted">赔率 ${esc(m.odds || "-")} · 概率 ${percent(m.prob)} · 凯利 ${esc(m.kelly || "-")}</div>
+          `).join("") || `<div class="muted">这场还没有赛前快照。</div>`}
+        </div>
+        <div class="block">
+          <h3>综合分推荐</h3>
+          ${ranking.length ? ranking.map(r => `
+            <div style="display:flex;justify-content:space-between;gap:8px;margin:8px 0">
+              <span>${esc(r.stage || "-")} · ${esc(r.market || "-")} ${esc(rankText(r))}</span>
+              <span class="badge ${r.resultType === "push" ? "push" : (r.hit ? "hit" : (r.settled ? "miss" : "pending"))}">${esc(r.resultType === "push" ? "走水" : (r.hit ? "命中" : (r.settled ? "未中" : "待结算")))}</span>
+            </div>
+            <div class="muted">支持率 ${esc(r.rate || "-")} · 综合分 ${esc(r.final_score || "-")} · 赔率 ${esc(r.odds || "-")}${r.actualScore ? " · 赛果 " + esc(r.actualScore) : ""}</div>
+          `).join("") : `<div class="muted">这场没有过综合分门槛，所以没有入库推荐。</div>`}
+        </div>
+        ${item.match_id ? `
+          <div class="block">
+            <h3>泊松概率</h3>
+            ${[["主胜", item.p_home], ["平局", item.p_draw], ["客胜", item.p_away]].map(([label, value]) => `
+              <div class="bar-row"><span>${label}</span><div class="hbar"><i style="width:${pctWidth(value)}%"></i></div><b>${percent(value)}</b></div>
+            `).join("")}
+            <div class="muted">参考比分 ${esc((item.score_home ?? "-") + "-" + (item.score_away ?? "-"))}</div>
+          </div>
+          <div class="block">
+            <h3>分析过程</h3>
+            ${steps.length ? steps.map(s => `<div class="step"><b>${esc(s.name || "步骤")}</b><div class="muted">${esc(s.detail || "-")}</div></div>`).join("") : `<div class="muted">这场快照还没有写下分析步骤。</div>`}
+          </div>
+        ` : ""}
+      `);
+      const close = document.getElementById("closeSheet");
+      if (close) close.onclick = closeSheet;
+    }
+    function render() {
+      bindChrome();
+      renderDays();
+      renderStats();
+      renderList();
+      if (state.selectedId) renderDrawer();
+    }
+    render();
+    if (state.key) loadList("");
+  </script>
+</body>
+</html>

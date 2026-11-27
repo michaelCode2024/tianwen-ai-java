@@ -14,6 +14,9 @@ public class TianwenAiProperties {
     private String defaultModel = "jiebao";
     private String paidUnlockAmount = "9.90";
     private boolean allowManualPaidUnlock = false;
+    private String paymentNotifySecret = "";
+    private String exportKey = "";
+    private String adminKey = "";
 
     public long getSessionSeconds(){return sessionSeconds;} public void setSessionSeconds(long v){sessionSeconds=v;}
     public int getFreeViewCount(){return freeViewCount;} public void setFreeViewCount(int v){freeViewCount=v;}
@@ -23,4 +26,14 @@ public class TianwenAiProperties {
     public String getDefaultModel(){return defaultModel;} public void setDefaultModel(String v){defaultModel=v;}
     public String getPaidUnlockAmount(){return paidUnlockAmount;} public void setPaidUnlockAmount(String v){paidUnlockAmount=v;}
     public boolean isAllowManualPaidUnlock(){return allowManualPaidUnlock;} public void setAllowManualPaidUnlock(boolean v){allowManualPaidUnlock=v;}
+    public String getPaymentNotifySecret(){return paymentNotifySecret;} public void setPaymentNotifySecret(String v){paymentNotifySecret=v;}
+    public String getExportKey(){return exportKey;} public void setExportKey(String v){exportKey=v;}
+    public String getAdminKey(){return adminKey;} public void setAdminKey(String v){adminKey=v;}
+
+    public String resolvedAdminKey() {
+        if (adminKey != null && !adminKey.isBlank()) {
+            return adminKey.trim();
+        }
+        return exportKey == null ? "" : exportKey.trim();
+    }
 }
