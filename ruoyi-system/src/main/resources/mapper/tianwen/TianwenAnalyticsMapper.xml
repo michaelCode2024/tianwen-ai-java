@@ -14,7 +14,14 @@
         AND r.result_status != 9
 
         <if test="q.recommendRole != null and q.recommendRole != '' and q.recommendRole != 'all'">
-            AND COALESCE(r.recommend_role, 'primary') = #{q.recommendRole}
+            <choose>
+                <when test="q.recommendRole == 'primary'">
+                    AND (r.recommend_role = 'primary' OR r.recommend_role IS NULL)
+                </when>
+                <otherwise>
+                    AND r.recommend_role = #{q.recommendRole}
+                </otherwise>
+            </choose>
         </if>
 
         <if test="q.startTime != null">

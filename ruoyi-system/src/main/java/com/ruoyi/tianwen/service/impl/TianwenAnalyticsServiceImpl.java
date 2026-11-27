@@ -2,6 +2,7 @@ package com.ruoyi.tianwen.service.impl;
 
 import com.ruoyi.tianwen.mapper.TianwenAnalyticsMapper;
 import com.ruoyi.tianwen.service.ITianwenAnalyticsService;
+import jakarta.annotation.PostConstruct;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
@@ -44,46 +45,42 @@ public class TianwenAnalyticsServiceImpl
         this.analyticsMapper = analyticsMapper;
     }
 
+    @PostConstruct
+    public void warmupAnalyticsCache() {
+        CompletableFuture.runAsync(() -> {
+            try {
+                performance(Map.of("days", "7", "min_rate", "90"));
+                performance(Map.of("days", "30", "min_rate", "90"));
+                dataOverview(Map.of("days", "7", "min_rate", "90"));
+                dataOverview(Map.of("days", "30", "min_rate", "90"));
+            } catch (Exception ignored) {
+                // 预热失败不影响应用启动
+            }
+        });
+    }
+
     @Override
     public Map<String,Object> performance(
             Map<String,String> query) {
 
         QuerySpec spec = parse(query);
         return getOrCompute("performance", spec.db, () -> {
-            Map<String,Object> overview =
-                    safeMap(
-                            analyticsMapper.selectOverview(
-                                    spec.db
-                            )
-                    );
+            CompletableFuture<Map<String,Object>> fOverview =
+                    CompletableFuture.supplyAsync(() -> safeMap(analyticsMapper.selectOverview(spec.db)));
+            CompletableFuture<List<Map<String,Object>>> fDaily =
+                    CompletableFuture.supplyAsync(() -> safeList(analyticsMapper.selectDailyTrend(spec.db)));
+            CompletableFuture<List<Map<String,Object>>> fMarket =
+                    CompletableFuture.supplyAsync(() -> safeList(analyticsMapper.selectMarketStats(spec.db)));
+            CompletableFuture<List<Map<String,Object>>> fRate =
+                    CompletableFuture.supplyAsync(() -> safeList(analyticsMapper.selectRateBucketStats(spec.db)));
+            CompletableFuture<List<Map<String,Object>>> fModel =
+                    CompletableFuture.supplyAsync(() -> safeList(analyticsMapper.selectModelStats(spec.db)));
 
-            List<Map<String,Object>> daily =
-                    safeList(
-                            analyticsMapper.selectDailyTrend(
-                                    spec.db
-                            )
-                    );
-
-            List<Map<String,Object>> marketStats =
-                    safeList(
-                            analyticsMapper.selectMarketStats(
-                                    spec.db
-                            )
-                    );
-
-            List<Map<String,Object>> rateStats =
-                    safeList(
-                            analyticsMapper.selectRateBucketStats(
-                                    spec.db
-                            )
-                    );
-
-            List<Map<String,Object>> modelStats =
-                    safeList(
-                            analyticsMapper.selectModelStats(
-                                    spec.db
-                            )
-                    );
+            Map<String,Object> overview = fOverview.join();
+            List<Map<String,Object>> daily = fDaily.join();
+            List<Map<String,Object>> marketStats = fMarket.join();
+            List<Map<String,Object>> rateStats = fRate.join();
+            List<Map<String,Object>> modelStats = fModel.join();
 
             Map<String,Object> out =
                     new LinkedHashMap<>();
@@ -125,33 +122,14 @@ public class TianwenAnalyticsServiceImpl
 
         QuerySpec spec = parse(query);
         return getOrCompute("dataOverview", spec.db, () -> {
-            Map<String,Object> overview =
-                    safeMap(
-                            analyticsMapper.selectOverview(
-                                    spec.db
-                            )
-                    );
-
-            List<Map<String,Object>> rateDistribution =
-                    safeList(
-                            analyticsMapper.selectRateDistribution(
-                                    spec.db
-                            )
-                    );
-
-            List<Map<String,Object>> resultDistribution =
-                    safeList(
-                            analyticsMapper.selectResultDistribution(
-                                    spec.db
-                            )
-                    );
-
-            List<Map<String,Object>> sportStats =
-                    safeList(
-                            analyticsMapper.selectSportStats(
-                                    spec.db
-                            )
-                    );
+            CompletableFuture<Map<String,Object>> fOverview =
+                    CompletableFuture.supplyAsync(() -> safeMap(analyticsMapper.selectOverview(spec.db)));
+            CompletableFuture<List<Map<String,Object>>> fRateDist =
+                    CompletableFuture.supplyAsync(() -> safeList(analyticsMapper.selectRateDistribution(spec.db)));
+            CompletableFuture<List<Map<String,Object>>> fResultDist =
+                    CompletableFuture.supplyAsync(() -> safeList(analyticsMapper.selectResultDistribution(spec.db)));
+            CompletableFuture<List<Map<String,Object>>> fSportStats =
+                    CompletableFuture.supplyAsync(() -> safeList(analyticsMapper.selectSportStats(spec.db)));
 
             Map<String,Object> out =
                     new LinkedHashMap<>();
@@ -160,10 +138,10 @@ public class TianwenAnalyticsServiceImpl
             out.put("range", spec.range);
             out.put("days", spec.days);
             out.put("filters", spec.filters);
-            out.put("overview", overview);
-            out.put("rateDistribution", rateDistribution);
-            out.put("resultDistribution", resultDistribution);
-            out.put("sportStats", sportStats);
+            out.put("overview", fOverview.join());
+            out.put("rateDistribution", fRateDist.join());
+            out.put("resultDistribution", fResultDist.join());
+            out.put("sportStats", fSportStats.join());
 
             return out;
         });

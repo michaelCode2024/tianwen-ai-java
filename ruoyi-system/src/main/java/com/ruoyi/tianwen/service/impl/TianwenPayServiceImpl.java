@@ -127,7 +127,10 @@ public class TianwenPayServiceImpl implements ITianwenPayService {
             throw new ServiceException("请先登录 / Please sign in first");
         }
         if (!isMerchantConfigured()) {
-            throw new ServiceException("支付网关商户密钥尚未配置（请配置 TIANWEN_PAY_MERCHANT_SECRET）");
+            String msg = "en".equals(normalizeLang(req == null ? null : req.getLang()))
+                    ? "Crypto checkout is temporarily under maintenance, please try again later"
+                    : "U钱包收银通道维护升级中，请稍后再试或使用免费解锁次数";
+            throw new ServiceException(msg);
         }
 
         String lang = normalizeLang(req == null ? null : req.getLang());

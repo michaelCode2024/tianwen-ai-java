@@ -51,5 +51,18 @@ public interface TianwenRecommendationMapper {
             @Param("dayEnd") String dayEnd
     );
 
+    List<Map<String, Object>> selectLatestRecommendationsByMatchIds(
+            @Param("model") String model,
+            @Param("matchIds") List<String> matchIds
+    );
+
     List<Map<String, Object>> selectPredictionDays(@Param("platform") String platform);
+
+    List<Map<String, Object>> selectUpcomingRecommendationsByRange(
+            @Param("model") String model,
+            @Param("dayStart") String dayStart,
+            @Param("dayEnd") String dayEnd
+    );
+
+    List<Map<String, Object>> selectRecommendationDays(@Param("model") String model);
 }

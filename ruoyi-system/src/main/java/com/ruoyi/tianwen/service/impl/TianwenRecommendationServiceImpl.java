@@ -14,6 +14,7 @@ import com.ruoyi.tianwen.mapper.TianwenUnlockMapper;
 import com.ruoyi.tianwen.service.ITianwenAccessPolicyService;
 import com.ruoyi.tianwen.service.ITianwenRecommendationService;
 import com.ruoyi.tianwen.util.TianwenPredictionView;
+import jakarta.annotation.PostConstruct;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -24,6 +25,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 
@@ -35,6 +38,7 @@ import org.springframework.stereotype.Service;
  */
 @Service
 public class TianwenRecommendationServiceImpl implements ITianwenRecommendationService {
+  private static final Logger log = LoggerFactory.getLogger(TianwenRecommendationServiceImpl.class);
   private static final Set<String> HIT = Set.of("1", "3", "4");
   private static final Set<String> LOST = Set.of("2", "5");
   private static final Set<String> FINISHED = Set.of("1", "2", "3", "4", "5");
@@ -49,9 +53,13 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
   private final Map<String, StatsCacheValue> statsCache = new ConcurrentHashMap<>();
   private final Map<String, ListCacheValue> listCache = new ConcurrentHashMap<>();
   private final Map<String, ListCacheValue> homeLatestCache = new ConcurrentHashMap<>();
+  private final Map<String, ListCacheValue> predictionsCache = new ConcurrentHashMap<>();
+  private final Map<String, ListCacheValue> predictionDaysCache = new ConcurrentHashMap<>();
   private final Set<String> refreshingStatsKeys = ConcurrentHashMap.newKeySet();
   private final Set<String> refreshingListKeys = ConcurrentHashMap.newKeySet();
   private final Set<String> refreshingHomeKeys = ConcurrentHashMap.newKeySet();
+  private final Set<String> refreshingPredictionKeys = ConcurrentHashMap.newKeySet();
+  private final Set<String> refreshingPredictionDaysKeys = ConcurrentHashMap.newKeySet();
 
   private final TianwenAiProperties properties;
   private final TianwenRecommendationMapper recommendationMapper;
@@ -73,6 +81,20 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
     this.overrideMapper = overrideMapper;
     this.accessPolicyService = accessPolicyService;
     this.objectMapper = objectMapper;
+  }
+
+  @PostConstruct
+  public void warmupHomeAndPredictions() {
+    CompletableFuture.runAsync(() -> {
+      try {
+        homeLatest(Map.of("min_rate", "90", "limit", "24"), null);
+        String today = LocalDate.now(ZoneId.of("Asia/Shanghai")).toString();
+        predictions(today, "jiebao", 3, null);
+        predictions(today, "nami", 3, null);
+      } catch (Exception ignored) {
+        // 预热失败不影响应用启动
+      }
+    });
   }
 
   private static int positiveInt(String v, int def, int min, Integer max) {
@@ -322,6 +344,7 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
 
     db.put("q", trim(q.get("q")));
     db.put("model", s.model);
+    db.put("sport", s.sport);
     db.put("matchId", trim(q.get("match_id")));
     db.put("stage", trim(q.get("stage")));
     db.put("market", trim(q.get("market")));
@@ -470,56 +493,252 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
 
   @Override
   public Map<String, Object> predictions(String date, String model, TianwenH5User user) {
+    return predictions(date, model, 1, user);
+  }
+
+  @Override
+  public Map<String, Object> predictions(
+      String date, String model, Integer days, TianwenH5User user) {
     LocalDate day = predictionDay(date);
-    String platform = TianwenPredictionView.platformOf(model);
-    List<Map<String, Object>> rows;
-    try {
-      rows =
-          recommendationMapper.selectPredictionsByDate(platform, dayStart(day), dayEnd(day));
-    } catch (DataAccessException e) {
-      throw new ServiceException("赛前预测还没有写入当前数据库");
-    }
-    if (rows == null) {
-      rows = List.of();
-    }
+    int span = days == null ? 1 : Math.min(Math.max(days, 1), 7);
+    String normalizedModel = normalizeModel(model);
+    String platform = TianwenPredictionView.platformOf(normalizedModel);
+    String startStr = dayStart(day);
+    String endStr = day.plusDays(span).toString() + " 00:00:00";
+    String cacheKey = platform + "|" + normalizedModel + "|" + startStr + "|" + endStr;
+
+    CompletableFuture<List<Map<String, Object>>> snapshotFuture =
+        CompletableFuture.supplyAsync(
+            () ->
+                getOrRefreshListCache(
+                        predictionsCache,
+                        refreshingPredictionKeys,
+                        cacheKey,
+                        () -> {
+                          List<Map<String, Object>> raw =
+                              loadPredictionRows(platform, normalizedModel, startStr, endStr);
+                          long ts = System.currentTimeMillis();
+                          return new ListCacheValue(
+                              ts + LIST_FRESH_MILLIS, ts + LIST_STALE_MILLIS, raw, false);
+                        })
+                    .items);
+
+    String recCacheKey = "rec_upcoming|" + normalizedModel + "|" + startStr + "|" + endStr;
+    CompletableFuture<List<Map<String, Object>>> upcomingRecFuture =
+        CompletableFuture.supplyAsync(
+            () ->
+                getOrRefreshListCache(
+                        predictionsCache,
+                        refreshingPredictionKeys,
+                        recCacheKey,
+                        () -> {
+                          List<Map<String, Object>> recRows;
+                          try {
+                            recRows =
+                                recommendationMapper.selectUpcomingRecommendationsByRange(
+                                    normalizedModel, startStr, endStr);
+                          } catch (DataAccessException e) {
+                            recRows = List.of();
+                          }
+                          if (recRows == null) recRows = List.of();
+                          long ts = System.currentTimeMillis();
+                          return new ListCacheValue(
+                              ts + LIST_FRESH_MILLIS, ts + LIST_STALE_MILLIS, recRows, false);
+                        })
+                    .items);
+
+    List<Map<String, Object>> rows = snapshotFuture.join();
+    List<Map<String, Object>> upcomingRecs = upcomingRecFuture.join();
+
     Set<String> unlockedMatches = unlockedMatches(user, rows);
-    List<Map<String, Object>> items = new ArrayList<>();
+    Set<String> unlockedRecIds =
+        user == null || upcomingRecs.isEmpty()
+            ? Collections.emptySet()
+            : new HashSet<>(unlockMapper.selectUnlockedIds(user.getId()));
+
+    List<Map<String, Object>> items = new ArrayList<>(rows.size() + upcomingRecs.size());
+    Set<String> seenMatchIds = new HashSet<>();
     for (Map<String, Object> row : rows) {
+      String mid = str(row.get("match_id"));
+      if (!mid.isEmpty()) seenMatchIds.add(mid);
       boolean allowed = predictionAllowed(user, row, unlockedMatches);
-      items.add(TianwenPredictionView.fromRow(row, allowed));
+      Map<String, Object> view = TianwenPredictionView.fromRow(row, allowed);
+      view.putIfAbsent("sport", "football");
+      items.add(view);
     }
+
+    for (Map<String, Object> rec : upcomingRecs) {
+      String mid = str(rec.get("match_id"));
+      if (!mid.isEmpty() && seenMatchIds.contains(mid)) {
+        continue;
+      }
+      if (!mid.isEmpty()) seenMatchIds.add(mid);
+      items.add(predictionFromRecommendation(rec, user, unlockedRecIds));
+    }
+
+    items.sort(
+        Comparator.comparing(
+            item -> str(item.get("match_time")),
+            Comparator.nullsLast(String::compareTo)));
+
+    List<Map<String, Object>> availableDays = cachedPredictionDays(platform, normalizedModel);
+
     Map<String, Object> out = new LinkedHashMap<>();
     out.put("code", 200);
     out.put("date", day.toString());
-    out.put("model", normalizeModel(model));
+    out.put("days", span);
+    out.put("dateEnd", day.plusDays(span - 1L).toString());
+    out.put("model", normalizedModel);
     out.put("platform", platform);
     out.put("items", items);
     out.put("count", items.size());
+    out.put("availableDays", availableDays);
     return out;
+  }
+
+  private Map<String, Object> predictionFromRecommendation(
+      Map<String, Object> rec, TianwenH5User user, Set<String> unlockedRecIds) {
+    String id = recId(rec);
+    boolean manuallyUnlocked = user != null && unlockedRecIds.contains(id);
+    boolean allowed = false;
+    try {
+      TianwenAccessResult access = accessPolicyService.check(user, rec, manuallyUnlocked);
+      allowed = access != null && access.isAllowed();
+    } catch (Exception ignored) {
+      allowed = false;
+    }
+
+    Map<String, Object> market = new LinkedHashMap<>();
+    market.put("label", blankDefault(str(rec.get("market")), "亚盘"));
+    market.put("locked", !allowed);
+    if (allowed) {
+      market.put("direction", rec.get("direction"));
+      market.put("available", rec.get("direction") != null && !str(rec.get("direction")).isBlank());
+      market.put("handicap", rec.get("display_handicap") != null ? rec.get("display_handicap") : rec.get("handicap"));
+      market.put("odds", rec.get("odds"));
+    }
+
+    Map<String, Object> view = new LinkedHashMap<>();
+    view.put("prediction_id", "rec_" + id);
+    view.put("model_platform", TianwenPredictionView.platformOf(str(rec.get("model"))));
+    view.put("match_id", str(rec.get("match_id")));
+    view.put("recommendation_id", rec.get("id"));
+    view.put("league_name", rec.get("league_name"));
+    view.put("match_time", rec.get("match_time"));
+    view.put("home_team", rec.get("home_team"));
+    view.put("guest_team", rec.get("guest_team"));
+    view.put("sport", blankDefault(str(rec.get("sport")), "football"));
+    view.put("stage", rec.get("stage"));
+    view.put("rate", rec.get("rate"));
+    view.put("locked", !allowed);
+    view.put("markets", List.of(market));
+    return view;
+  }
+
+  private List<Map<String, Object>> cachedPredictionDays(String platform, String normalizedModel) {
+    return getOrRefreshListCache(
+            predictionDaysCache,
+            refreshingPredictionDaysKeys,
+            "days|" + platform + "|" + normalizedModel,
+            () -> {
+              Map<String, Integer> merged = new TreeMap<>(Comparator.reverseOrder());
+              for (Map<String, Object> row : predictionDays(platform)) {
+                String d = str(row.get("day"));
+                if (!d.isEmpty()) merged.put(d, intValue(row.get("matches"), 0));
+              }
+              try {
+                List<Map<String, Object>> recDays =
+                    recommendationMapper.selectRecommendationDays(normalizedModel);
+                if (recDays != null) {
+                  for (Map<String, Object> row : recDays) {
+                    String d = str(row.get("day"));
+                    if (!d.isEmpty()) {
+                      int cnt = intValue(row.get("matches"), 0);
+                      merged.merge(d, cnt, Math::max);
+                    }
+                  }
+                }
+              } catch (DataAccessException ignored) {}
+              List<Map<String, Object>> days = new ArrayList<>();
+              int count = 0;
+              for (Map.Entry<String, Integer> e : merged.entrySet()) {
+                if (count++ >= 90) break;
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("day", e.getKey());
+                item.put("matches", e.getValue());
+                days.add(item);
+              }
+              long ts = System.currentTimeMillis();
+              return new ListCacheValue(ts + 60_000L, ts + LIST_STALE_MILLIS, days, false);
+            })
+        .items;
+  }
+
+  private List<Map<String, Object>> loadPredictionRows(
+      String platform, String normalizedModel, String startStr, String endStr) {
+    List<Map<String, Object>> rows;
+    try {
+      rows = recommendationMapper.selectPredictionsByDate(platform, startStr, endStr);
+    } catch (DataAccessException e) {
+      throw new ServiceException("赛前预测还没有写入当前数据库");
+    }
+    if (rows == null || rows.isEmpty()) {
+      return List.of();
+    }
+    List<String> matchIds =
+        rows.stream()
+            .map(r -> str(r.get("match_id")))
+            .filter(id -> !id.isEmpty())
+            .distinct()
+            .collect(Collectors.toList());
+    Map<String, Map<String, Object>> recByMatch = new HashMap<>();
+    if (!matchIds.isEmpty()) {
+      try {
+        List<Map<String, Object>> recRows =
+            recommendationMapper.selectLatestRecommendationsByMatchIds(normalizedModel, matchIds);
+        if (recRows != null) {
+          for (Map<String, Object> rec : recRows) {
+            String mid = str(rec.get("match_id"));
+            if (!mid.isEmpty()) {
+              recByMatch.put(mid, rec);
+            }
+          }
+        }
+      } catch (DataAccessException ignored) {
+        // 批量补充推荐关联失败时不阻断赛前预测展示
+      }
+    }
+    List<Map<String, Object>> enriched = new ArrayList<>(rows.size());
+    for (Map<String, Object> row : rows) {
+      Map<String, Object> copy = new LinkedHashMap<>(row);
+      Map<String, Object> rec = recByMatch.get(str(row.get("match_id")));
+      if (rec != null) {
+        copy.put("recommendation_id", rec.get("recommendation_id"));
+        copy.put("ranking_status", rec.get("ranking_status"));
+        copy.put("ranking_market", rec.get("ranking_market"));
+        copy.put("ranking_direction", rec.get("ranking_direction"));
+        copy.put("ranking_handicap", rec.get("ranking_handicap"));
+      }
+      enriched.add(copy);
+    }
+    return enriched;
   }
 
   @Override
   public Map<String, Object> exportPredictions(String date, String model) {
     LocalDate day = predictionDay(date);
-    String platform = TianwenPredictionView.platformOf(model);
-    List<Map<String, Object>> rows;
-    try {
-      rows =
-          recommendationMapper.selectPredictionsByDate(platform, dayStart(day), dayEnd(day));
-    } catch (DataAccessException e) {
-      throw new ServiceException("赛前预测还没有写入当前数据库");
-    }
-    if (rows == null) {
-      rows = List.of();
-    }
-    List<Map<String, Object>> items = new ArrayList<>();
+    String normalizedModel = normalizeModel(model);
+    String platform = TianwenPredictionView.platformOf(normalizedModel);
+    List<Map<String, Object>> rows =
+        loadPredictionRows(platform, normalizedModel, dayStart(day), dayEnd(day));
+    List<Map<String, Object>> items = new ArrayList<>(rows.size());
     for (Map<String, Object> row : rows) {
       items.add(TianwenPredictionView.fromRow(row, true));
     }
     Map<String, Object> out = new LinkedHashMap<>();
     out.put("code", 200);
     out.put("date", day.toString());
-    out.put("model", normalizeModel(model));
+    out.put("model", normalizedModel);
     out.put("platform", platform);
     out.put("items", items);
     out.put("count", items.size());
@@ -587,6 +806,20 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
       row =
           recommendationMapper.selectReplayPrediction(
               TianwenPredictionView.platformOf(normalized), id);
+      if (row != null && !row.isEmpty()) {
+        List<Map<String, Object>> recRows =
+            recommendationMapper.selectLatestRecommendationsByMatchIds(normalized, List.of(id));
+        if (recRows != null && !recRows.isEmpty()) {
+          Map<String, Object> copy = new LinkedHashMap<>(row);
+          Map<String, Object> rec = recRows.get(0);
+          copy.put("recommendation_id", rec.get("recommendation_id"));
+          copy.put("ranking_status", rec.get("ranking_status"));
+          copy.put("ranking_market", rec.get("ranking_market"));
+          copy.put("ranking_direction", rec.get("ranking_direction"));
+          copy.put("ranking_handicap", rec.get("ranking_handicap"));
+          row = copy;
+        }
+      }
     } catch (DataAccessException e) {
       throw new ServiceException("赛前预测还没有写入当前数据库");
     }
@@ -1152,15 +1385,18 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
     try {
       access = accessPolicyService.check(user, m, manuallyUnlocked);
     } catch (Exception e) {
-      throw new ServiceException(
-          "推荐权限判断失败，recommendationId=" + recId(m)
-              + ", userId=" + (user == null ? "anonymous" : user.getId())
-              + ", vipLevel=" + (user == null ? 0 : Objects.requireNonNullElse(user.getVipLevel(), 0))
-              + ": " + e.getMessage());
+      log.warn(
+          "推荐权限核验异常 recommendationId={}, userId={}, vipLevel={}: {}",
+          recId(m),
+          user == null ? "anonymous" : user.getId(),
+          user == null ? 0 : Objects.requireNonNullElse(user.getVipLevel(), 0),
+          e.getMessage());
+      throw new ServiceException("推荐权限核验异常，请稍后重试");
     }
 
     if (access == null) {
-      throw new ServiceException("推荐权限判断结果为空，recommendationId=" + recId(m));
+      log.warn("推荐权限核验结果为空 recommendationId={}", recId(m));
+      throw new ServiceException("推荐权限核验异常，请稍后重试");
     }
 
     m.put("access", access.toMap());

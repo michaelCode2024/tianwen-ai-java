@@ -115,9 +115,10 @@ public class TianwenH5Controller {
   public Map<String, Object> predictions(
       @RequestParam(required = false) String date,
       @RequestParam(defaultValue = "jiebao") String model,
+      @RequestParam(defaultValue = "1") Integer days,
       HttpServletRequest request) {
     TianwenH5User user = userService.currentUser(readToken(request));
-    return recommendationService.predictions(date, model, user);
+    return recommendationService.predictions(date, model, days, user);
   }
 
   @GetMapping("/recommendations/{id}")
