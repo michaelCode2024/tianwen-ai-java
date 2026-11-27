@@ -254,6 +254,7 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
 
     Map<String, Integer> counts = new LinkedHashMap<>();
     counts.put("all", intValue(countRow, "all_count"));
+    counts.put("upcoming", intValue(countRow, "upcoming_count"));
     counts.put("pending", intValue(countRow, "pending_count"));
     counts.put("hit", intValue(countRow, "hit_count"));
     counts.put("finished", intValue(countRow, "finished_count"));
@@ -1149,6 +1150,7 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
     Map<String, Object> countRow = recommendationMapper.selectFastCounts(spec.db);
     Map<String, Integer> counts = new LinkedHashMap<>();
     counts.put("all", intValue(countRow, "all_count"));
+    counts.put("upcoming", intValue(countRow, "upcoming_count"));
     counts.put("pending", intValue(countRow, "pending_count"));
     counts.put("hit", intValue(countRow, "hit_count"));
     counts.put("finished", intValue(countRow, "finished_count"));
@@ -1185,6 +1187,7 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
 
     Map<String, Integer> counts = new LinkedHashMap<>();
     counts.put("all", intValue(countRow, "all_count"));
+    counts.put("upcoming", intValue(countRow, "upcoming_count"));
     counts.put("pending", intValue(countRow, "pending_count"));
     counts.put("hit", intValue(countRow, "hit_count"));
     counts.put("finished", intValue(countRow, "finished_count"));

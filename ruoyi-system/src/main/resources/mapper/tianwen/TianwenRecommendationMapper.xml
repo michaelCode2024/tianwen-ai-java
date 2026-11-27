@@ -174,6 +174,7 @@
                     <when test="q.quick == 'pending'">
                         AND r.result_status = 0
                         AND r.is_latest = 1
+                        AND r.match_time &gt;= DATE_SUB(NOW(), INTERVAL 24 HOUR)
                     </when>
                     <when test="q.quick == 'hit'">
                         AND r.result_status IN (1,3,4)
@@ -249,7 +250,11 @@
         SELECT
             COUNT(1) AS all_count,
             SUM(CASE WHEN r.result_status = 0
-                      AND r.is_latest=1 THEN 1 ELSE 0 END) AS pending_count,
+                      AND r.is_latest=1
+                      AND r.match_time &gt;= NOW() THEN 1 ELSE 0 END) AS upcoming_count,
+            SUM(CASE WHEN r.result_status = 0
+                      AND r.is_latest=1
+                      AND r.match_time &gt;= DATE_SUB(NOW(), INTERVAL 24 HOUR) THEN 1 ELSE 0 END) AS pending_count,
             SUM(CASE WHEN r.result_status IN (1,3,4) THEN 1 ELSE 0 END) AS hit_count,
             SUM(CASE WHEN r.result_status IN (1,2,3,4,5) THEN 1 ELSE 0 END) AS finished_count,
             SUM(CASE WHEN r.result_status = 9
@@ -261,7 +266,7 @@
     <!--
       首页专用：
       一次取 jiebao+nami，替代前端两次 recommendations 请求。
-      只取最新版本，只返回卡片字段。
+      只取最新版本，排除超期 6 小时未结算历史孤儿单，优先展示有效未开赛/近期赛果。
     -->
     <select id="selectHomeLatest" resultType="java.util.LinkedHashMap">
         <include refid="FastSelect"/>
@@ -269,6 +274,7 @@
             AND r.model IN ('jiebao','nami')
             AND r.is_latest = 1
             AND (r.recommend_role = 'primary' OR r.recommend_role IS NULL)
+            AND (r.result_status != 0 OR r.match_time &gt;= DATE_SUB(NOW(), INTERVAL 6 HOUR))
             <if test="q.minRate != null">
                 AND r.rate &gt;= #{q.minRate}
             </if>
@@ -278,11 +284,14 @@
         </where>
         ORDER BY
             CASE
-                WHEN r.result_status = 0 AND r.match_time &gt;= NOW() THEN 0
-                WHEN r.result_status = 0 THEN 1
-                ELSE 2
+                WHEN r.result_status = 0 AND r.match_time &gt;= DATE_SUB(NOW(), INTERVAL 6 HOUR) THEN 0
+                ELSE 1
             END,
-            r.create_time DESC,
+            CASE
+                WHEN r.result_status = 0 THEN r.match_time
+            END ASC,
+            r.match_time DESC,
+            r.rate DESC,
             r.id DESC
         LIMIT #{q.limit}
     </select>
