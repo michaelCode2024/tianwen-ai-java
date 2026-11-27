@@ -48,7 +48,7 @@ public class TianwenOrderService {
     String orderNo = newOrderNo();
     if ("unlock".equals(productType)) {
       String recommendationId = text(body.get("recommendationId"));
-      if (!recommendationId.matches("\\d+")) {
+      if (!recommendationId.matches("^(\\d+|pm_(jiebao|nami)_[A-Za-z0-9_-]{1,48})$")) {
         throw new ServiceException("recommendationId格式错误");
       }
       orderMapper.insert(

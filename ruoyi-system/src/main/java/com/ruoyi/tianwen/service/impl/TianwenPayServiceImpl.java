@@ -510,9 +510,7 @@ public class TianwenPayServiceImpl implements ITianwenPayService {
                 if (recId.isEmpty()) {
                     throw new ServiceException(en ? "Missing recommendationId" : "缺少待解锁的推荐ID");
                 }
-                try {
-                    Long.parseLong(recId);
-                } catch (NumberFormatException e) {
+                if (!recId.matches("^(\\d+|pm_(jiebao|nami)_[A-Za-z0-9_-]{1,48})$")) {
                     throw new ServiceException(en ? "Invalid recommendationId" : "推荐ID格式错误");
                 }
                 if (unlockMapper.selectOne(user.getId(), recId) != null) {

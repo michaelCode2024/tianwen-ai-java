@@ -9,31 +9,35 @@
       H5 列表只返回卡片真正需要的数据。
       不 JOIN t_leisu_schedule，不查 corn_score/asia_handicap/big_small 等详情字段。
     -->
+    <sql id="FastColumns">
+        r.id,
+        r.model,
+        r.sport,
+        r.match_id,
+        r.league_name,
+        DATE_FORMAT(r.match_time, '%Y-%m-%d %H:%i:%s') AS match_time,
+        r.home_team,
+        r.guest_team,
+        r.stage,
+        r.market,
+        r.direction,
+        r.handicap,
+        r.handicap AS display_handicap,
+        r.odds,
+        r.rate,
+        r.final_score,
+        COALESCE(r.recommend_role, 'primary') AS recommend_role,
+        r.result_status,
+        r.is_latest AS is_latest,
+        r.final_home_score,
+        r.final_guest_score,
+        DATE_FORMAT(r.create_time, '%Y-%m-%d %H:%i:%s') AS create_time,
+        DATE_FORMAT(r.update_time, '%Y-%m-%d %H:%i:%s') AS update_time
+    </sql>
+
     <sql id="FastSelect">
         SELECT
-            r.id,
-            r.model,
-            r.sport,
-            r.match_id,
-            r.league_name,
-            DATE_FORMAT(r.match_time, '%Y-%m-%d %H:%i:%s') AS match_time,
-            r.home_team,
-            r.guest_team,
-            r.stage,
-            r.market,
-            r.direction,
-            r.handicap,
-            r.handicap AS display_handicap,
-            r.odds,
-            r.rate,
-            r.final_score,
-            COALESCE(r.recommend_role, 'primary') AS recommend_role,
-            r.result_status,
-            r.is_latest AS is_latest,
-            r.final_home_score,
-            r.final_guest_score,
-            DATE_FORMAT(r.create_time, '%Y-%m-%d %H:%i:%s') AS create_time,
-            DATE_FORMAT(r.update_time, '%Y-%m-%d %H:%i:%s') AS update_time
+            <include refid="FastColumns"/>
         FROM football_ai_recommend_record r
     </sql>
 
@@ -632,6 +636,90 @@
         GROUP BY DATE_FORMAT(r.match_time, '%Y-%m-%d')
         ORDER BY day DESC
         LIMIT 90
+    </select>
+
+    <select id="selectUpcomingBestRecommendations" resultType="java.util.LinkedHashMap">
+        SELECT *
+        FROM (
+            SELECT
+                <include refid="FastColumns"/>,
+                ROW_NUMBER() OVER (
+                    PARTITION BY r.model, r.match_id
+                    ORDER BY r.rate DESC,
+                             CASE WHEN r.recommend_role = 'primary' OR r.recommend_role IS NULL THEN 0 ELSE 1 END,
+                             r.id DESC
+                ) AS upcoming_rn
+            FROM football_ai_recommend_record r
+            WHERE r.result_status = 0
+              AND r.is_latest = 1
+              AND r.match_time &gt;= NOW()
+              <if test="q.model != null and q.model != ''">
+                  AND r.model = #{q.model}
+              </if>
+              <if test="q.models != null and q.models.size() &gt; 0">
+                  AND r.model IN
+                  <foreach collection="q.models" item="m" open="(" close=")" separator=",">
+                      #{m}
+                  </foreach>
+              </if>
+              <if test="q.sport != null and q.sport != '' and q.sport != 'all'">
+                  <choose>
+                      <when test="q.sport == 'basketball'">
+                          AND (r.sport = 'basketball' OR r.market IN ('让分','大小分','胜负'))
+                      </when>
+                      <when test="q.sport == 'football'">
+                          AND (r.sport IS NULL OR r.sport = '' OR r.sport = 'football')
+                          AND (r.market IS NULL OR r.market NOT IN ('让分','大小分'))
+                      </when>
+                      <otherwise>
+                          AND r.sport = #{q.sport}
+                      </otherwise>
+                  </choose>
+              </if>
+              <if test="q.market != null and q.market != ''">
+                  AND r.market = #{q.market}
+              </if>
+              <if test="q.minRate != null">
+                  AND r.rate &gt;= #{q.minRate}
+              </if>
+              <if test="q.maxRate != null">
+                  AND r.rate &lt;= #{q.maxRate}
+              </if>
+              <if test="q.q != null and q.q != ''">
+                  AND (
+                      CAST(r.id AS CHAR) = #{q.q}
+                      OR r.match_id = #{q.q}
+                      OR r.league_name LIKE CONCAT('%', #{q.q}, '%')
+                      OR r.home_team LIKE CONCAT('%', #{q.q}, '%')
+                      OR r.guest_team LIKE CONCAT('%', #{q.q}, '%')
+                  )
+              </if>
+        ) ranked
+        WHERE ranked.upcoming_rn = 1
+        ORDER BY ranked.match_time ASC, ranked.rate DESC, ranked.id DESC
+    </select>
+
+    <select id="selectUpcomingPredictionsForFeed" resultType="java.util.LinkedHashMap">
+        SELECT *
+        FROM (
+            SELECT
+                <include refid="PredictionFastColumns"/>,
+                ROW_NUMBER() OVER (
+                    PARTITION BY p.model_platform, p.match_id
+                    ORDER BY CASE s.stage WHEN '即时盘' THEN 0 WHEN '初盘' THEN 1 ELSE 2 END, p.id DESC
+                ) AS replay_rank
+            FROM football_prediction p
+            INNER JOIN football_feature_snapshot s ON s.id = p.snapshot_id
+            WHERE p.model_platform IN
+              <foreach collection="platforms" item="pf" open="(" close=")" separator=",">
+                  #{pf}
+              </foreach>
+              AND s.stage IN ('初盘', '即时盘')
+              AND s.match_time &gt;= NOW()
+        ) ranked
+        WHERE ranked.replay_rank = 1
+        ORDER BY ranked.match_time ASC, ranked.prediction_id DESC
+        LIMIT #{limit}
     </select>
 
 </mapper>

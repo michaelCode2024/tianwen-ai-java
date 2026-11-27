@@ -18,12 +18,15 @@ import jakarta.annotation.PostConstruct;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,6 +45,11 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
   private static final Set<String> HIT = Set.of("1", "3", "4");
   private static final Set<String> LOST = Set.of("2", "5");
   private static final Set<String> FINISHED = Set.of("1", "2", "3", "4", "5");
+  private static final Pattern SYNTHETIC_REC_ID =
+      Pattern.compile("^pm_(jiebao|nami)_([A-Za-z0-9_-]{1,48})$");
+  private static final DateTimeFormatter MATCH_TIME_FMT =
+      DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+  private static final ZoneId SHANGHAI_ZONE = ZoneId.of("Asia/Shanghai");
 
   // 推荐统计与公共列表采用 SWR：30 秒内直接命中，30 秒~5 分钟先秒返旧缓存并后台单飞刷新，避免用户撞冷查询。
   private static final long STATS_FRESH_MILLIS = 30_000L;
@@ -87,8 +95,10 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
   public void warmupHomeAndPredictions() {
     CompletableFuture.runAsync(() -> {
       try {
-        homeLatest(Map.of("min_rate", "90", "limit", "24"), null);
-        String today = LocalDate.now(ZoneId.of("Asia/Shanghai")).toString();
+        homeLatest(Map.of("min_rate", "80", "limit", "30"), null);
+        list(Map.of("model", "jiebao", "quick", "upcoming", "min_rate", "80", "page", "1", "page_size", "24"), null);
+        list(Map.of("model", "nami", "quick", "upcoming", "min_rate", "80", "page", "1", "page_size", "24"), null);
+        String today = LocalDate.now(SHANGHAI_ZONE).toString();
         predictions(today, "jiebao", 3, null);
         predictions(today, "nami", 3, null);
       } catch (Exception ignored) {
@@ -149,23 +159,82 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
   public Map<String, Object> list(Map<String, String> query, TianwenH5User user) {
     QuerySpec spec = parseQuery(query, false);
 
-    // 多取 1 条用于判断是否还有下一页，避免 COUNT(*)。
-    spec.db.put("limit", spec.pageSize + 1);
+    List<Map<String, Object>> items;
+    boolean hasMore;
 
-    boolean cacheable = trim(query == null ? null : query.get("q")).isEmpty() && spec.page <= 5;
-    String cacheKey = cacheable ? buildListCacheKey(spec.db) : null;
+    if ("upcoming".equals(spec.quick)) {
+      List<Map<String, Object>> merged =
+          loadMergedUpcoming(
+              List.of(spec.model),
+              spec.sport,
+              str(spec.db.get("market")),
+              toDouble(spec.db.get("minRate")),
+              toDouble(spec.db.get("maxRate")),
+              str(spec.db.get("q")),
+              str(spec.db.get("sortBy")));
+      int offset = (spec.page - 1) * spec.pageSize;
+      if (offset >= merged.size()) {
+        items = List.of();
+        hasMore = false;
+      } else {
+        int end = Math.min(merged.size(), offset + spec.pageSize);
+        items = merged.subList(offset, end);
+        hasMore = end < merged.size();
+      }
+    } else {
+      // 多取 1 条用于判断是否还有下一页，避免 COUNT(*)。
+      spec.db.put("limit", spec.pageSize + 1);
 
-    ListCacheValue listValue =
-        cacheKey != null
-            ? getOrRefreshListCache(
-                listCache,
-                refreshingListKeys,
-                cacheKey,
-                () -> computeListValue(spec))
-            : computeListValue(spec);
+      boolean cacheable = trim(query == null ? null : query.get("q")).isEmpty() && spec.page <= 5;
+      String cacheKey = cacheable ? buildListCacheKey(spec.db) : null;
 
-    List<Map<String, Object>> items = listValue.items;
-    boolean hasMore = listValue.hasMore;
+      ListCacheValue listValue =
+          cacheKey != null
+              ? getOrRefreshListCache(
+                  listCache,
+                  refreshingListKeys,
+                  cacheKey,
+                  () -> computeListValue(spec))
+              : computeListValue(spec);
+
+      items = listValue.items;
+      hasMore = listValue.hasMore;
+
+      if (spec.quick.isEmpty() && spec.page == 1 && str(spec.db.get("q")).isEmpty()) {
+        List<Map<String, Object>> upcomingTop =
+            loadMergedUpcoming(
+                List.of(spec.model),
+                spec.sport,
+                str(spec.db.get("market")),
+                toDouble(spec.db.get("minRate")),
+                toDouble(spec.db.get("maxRate")),
+                "",
+                str(spec.db.get("sortBy")));
+        if (!upcomingTop.isEmpty()) {
+          int cap = Math.min(10, Math.max(4, spec.pageSize / 2));
+          List<Map<String, Object>> combined = new ArrayList<>(spec.pageSize);
+          Set<String> seen = new HashSet<>();
+          for (Map<String, Object> up : upcomingTop) {
+            if (combined.size() >= cap) break;
+            String key = modelMatchKey(up);
+            if (seen.add(key)) {
+              combined.add(up);
+            }
+          }
+          for (Map<String, Object> row : items) {
+            if (combined.size() >= spec.pageSize) break;
+            String key = modelMatchKey(row);
+            if (seen.add(key)) {
+              combined.add(row);
+            }
+          }
+          items = combined;
+          if (!hasMore && upcomingTop.size() > cap) {
+            hasMore = true;
+          }
+        }
+      }
+    }
 
     Set<String> unlocked =
         user == null
@@ -174,7 +243,7 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
 
     List<Map<String, Object>> viewItems =
         items.stream()
-            .map(i -> mask(i, user, unlocked.contains(recId(i))))
+            .map(i -> mask(i, user, isUnlockedForRow(unlocked, i)))
             .collect(Collectors.toList());
 
     Map<String, Object> out = new LinkedHashMap<>();
@@ -252,9 +321,23 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
   private Map<String, Object> computeStats(QuerySpec spec) {
     Map<String, Object> countRow = recommendationMapper.selectFastCounts(spec.db);
 
+    int dbUpcoming = intValue(countRow, "upcoming_count");
+    int mergedUpcoming =
+        loadMergedUpcoming(
+                List.of(spec.model),
+                spec.sport,
+                str(spec.db.get("market")),
+                toDouble(spec.db.get("minRate")),
+                toDouble(spec.db.get("maxRate")),
+                str(spec.db.get("q")),
+                "match_time")
+            .size();
+    int dbAll = intValue(countRow, "all_count");
+    int adjustedAll = dbAll + Math.max(0, mergedUpcoming - dbUpcoming);
+
     Map<String, Integer> counts = new LinkedHashMap<>();
-    counts.put("all", intValue(countRow, "all_count"));
-    counts.put("upcoming", intValue(countRow, "upcoming_count"));
+    counts.put("all", adjustedAll);
+    counts.put("upcoming", mergedUpcoming);
     counts.put("pending", intValue(countRow, "pending_count"));
     counts.put("hit", intValue(countRow, "hit_count"));
     counts.put("finished", intValue(countRow, "finished_count"));
@@ -277,27 +360,53 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
 
     Map<String, Object> db = new LinkedHashMap<>();
     Double minRate = toDouble(q.get("min_rate"));
-    if (minRate == null) minRate = properties.getDefaultMinRate();
+    if (minRate == null) minRate = 80D;
 
-    int limit = positiveInt(q.get("limit"), 24, 1, 50);
+    int limit = positiveInt(q.get("limit"), 30, 1, 60);
 
-    db.put("minRate", minRate);
+    db.put("minRate", Math.max(90D, minRate));
     db.put("limit", limit);
     db.put("status", trim(q.get("status")));
 
-    String cacheKey = buildListCacheKey(db);
+    List<Map<String, Object>> upcomingAll =
+        loadMergedUpcoming(
+            List.of("jiebao", "nami"),
+            "all",
+            "",
+            Math.min(minRate, 80D),
+            null,
+            "",
+            "match_time");
+
+    String cacheKey = "home_v2|" + buildListCacheKey(db);
     List<Map<String, Object>> rows =
         getOrRefreshListCache(
                 homeLatestCache,
                 refreshingHomeKeys,
                 cacheKey,
                 () -> {
+                  int upcomingTarget = Math.min(upcomingAll.size(), Math.max(12, Math.min(18, limit * 2 / 3)));
+                  List<Map<String, Object>> upcomingPick = pickBalancedUpcoming(upcomingAll, upcomingTarget);
+                  Set<String> seen = new HashSet<>();
+                  List<Map<String, Object>> merged = new ArrayList<>(limit);
+                  for (Map<String, Object> up : upcomingPick) {
+                    if (seen.add(modelMatchKey(up))) {
+                      merged.add(up);
+                    }
+                  }
+
                   List<Map<String, Object>> raw = recommendationMapper.selectHomeLatest(db);
                   List<Map<String, Object>> computed = applyOverrides(raw);
                   computed.forEach(this::decorateAndScript);
+                  for (Map<String, Object> hist : computed) {
+                    if (merged.size() >= limit) break;
+                    if (seen.add(modelMatchKey(hist))) {
+                      merged.add(hist);
+                    }
+                  }
                   long ts = System.currentTimeMillis();
                   return new ListCacheValue(
-                      ts + LIST_FRESH_MILLIS, ts + LIST_STALE_MILLIS, computed, false);
+                      ts + LIST_FRESH_MILLIS, ts + LIST_STALE_MILLIS, merged, false);
                 })
             .items;
 
@@ -308,13 +417,18 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
 
     List<Map<String, Object>> items =
         rows.stream()
-            .map(i -> mask(i, user, unlocked.contains(recId(i))))
+            .map(i -> mask(i, user, isUnlockedForRow(unlocked, i)))
             .collect(Collectors.toList());
+
+    int hitCount =
+        (int) items.stream().filter(i -> HIT.contains(str(i.get("result_status")))).count();
 
     Map<String, Object> out = new LinkedHashMap<>();
     out.put("code", 200);
     out.put("items", items);
     out.put("count", items.size());
+    out.put("upcomingCount", upcomingAll.size());
+    out.put("hitCount", hitCount);
     out.put("auth", auth(user, "all"));
     out.put(
         "source",
@@ -323,6 +437,360 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
             "table", "football_ai_recommend_record",
             "latestOnly", true));
     return out;
+  }
+
+  private List<Map<String, Object>> loadMergedUpcoming(
+      List<String> models,
+      String sport,
+      String market,
+      Double minRate,
+      Double maxRate,
+      String keyword,
+      String sortBy) {
+    List<String> normModels =
+        (models == null || models.isEmpty())
+            ? List.of("jiebao", "nami")
+            : models.stream().map(this::normalizeModel).distinct().collect(Collectors.toList());
+
+    String normalizedSport = trim(sport).toLowerCase(Locale.ROOT);
+    String normalizedMarket = trim(market);
+    String kw = trim(keyword).toLowerCase(Locale.ROOT);
+
+    Map<String, Object> db = new LinkedHashMap<>();
+    db.put("models", normModels);
+    db.put("sport", normalizedSport);
+    db.put("market", normalizedMarket);
+    db.put("minRate", minRate);
+    db.put("maxRate", maxRate);
+    db.put("q", kw);
+
+    List<Map<String, Object>> recRows =
+        getOrRefreshListCache(
+                listCache,
+                refreshingListKeys,
+                "up_rec|" + buildListCacheKey(db),
+                () -> {
+                  List<Map<String, Object>> raw;
+                  try {
+                    raw = recommendationMapper.selectUpcomingBestRecommendations(db);
+                  } catch (DataAccessException e) {
+                    raw = List.of();
+                  }
+                  if (raw == null) raw = List.of();
+                  List<Map<String, Object>> computed = applyOverrides(raw);
+                  computed.forEach(this::decorateAndScript);
+                  computed.forEach(this::decorateResult);
+                  long ts = System.currentTimeMillis();
+                  return new ListCacheValue(
+                      ts + LIST_FRESH_MILLIS, ts + LIST_STALE_MILLIS, computed, false);
+                })
+            .items;
+
+    List<Map<String, Object>> result = new ArrayList<>(recRows.size() + 64);
+    Set<String> seen = new HashSet<>();
+    for (Map<String, Object> row : recRows) {
+      String key = modelMatchKey(row);
+      if (seen.add(key)) {
+        Map<String, Object> copy = deepCopy(row);
+        copy.putIfAbsent("coveredMarkets", List.of(blankDefault(str(copy.get("market")), "亚盘")));
+        copy.putIfAbsent("hasMultiMarkets", Boolean.FALSE);
+        copy.putIfAbsent("hasPoissonScore", Boolean.FALSE);
+        result.add(copy);
+      }
+    }
+
+    if (!"basketball".equals(normalizedSport)) {
+      List<String> platforms =
+          normModels.stream()
+              .map(TianwenPredictionView::platformOf)
+              .distinct()
+              .collect(Collectors.toList());
+      String predKey = "up_pred_feed|" + String.join(",", platforms);
+      List<Map<String, Object>> predRows =
+          getOrRefreshListCache(
+                  predictionsCache,
+                  refreshingPredictionKeys,
+                  predKey,
+                  () -> {
+                    List<Map<String, Object>> raw;
+                    try {
+                      raw = recommendationMapper.selectUpcomingPredictionsForFeed(platforms, 450);
+                    } catch (DataAccessException e) {
+                      raw = List.of();
+                    }
+                    if (raw == null) raw = List.of();
+                    long ts = System.currentTimeMillis();
+                    return new ListCacheValue(
+                        ts + LIST_FRESH_MILLIS, ts + LIST_STALE_MILLIS, raw, false);
+                  })
+              .items;
+
+      for (Map<String, Object> pred : predRows) {
+        Map<String, Object> synth = toSyntheticUpcomingRec(pred);
+        if (synth == null) continue;
+        String key = modelMatchKey(synth);
+        if (!seen.add(key)) continue;
+        if (!matchesUpcomingFilters(synth, normalizedMarket, minRate, maxRate, kw)) continue;
+        decorateAndScript(synth);
+        decorateResult(synth);
+        result.add(synth);
+      }
+    }
+
+    Comparator<Map<String, Object>> cmp =
+        "rate".equals(sortBy)
+            ? Comparator.<Map<String, Object>>comparingDouble(
+                    r -> -Optional.ofNullable(toDouble(r.get("rate"))).orElse(0D))
+                .thenComparing(r -> str(r.get("match_time")))
+            : Comparator.<Map<String, Object>, String>comparing(r -> str(r.get("match_time")))
+                .thenComparingDouble(
+                    r -> -Optional.ofNullable(toDouble(r.get("rate"))).orElse(0D));
+    result.sort(cmp);
+    return result;
+  }
+
+  private List<Map<String, Object>> pickBalancedUpcoming(
+      List<Map<String, Object>> upcomingAll, int target) {
+    if (upcomingAll.isEmpty() || target <= 0) return List.of();
+    List<Map<String, Object>> jiebaoList = new ArrayList<>();
+    List<Map<String, Object>> namiList = new ArrayList<>();
+    for (Map<String, Object> row : upcomingAll) {
+      if ("nami".equals(normalizeModel(str(row.get("model"))))) {
+        namiList.add(row);
+      } else {
+        jiebaoList.add(row);
+      }
+    }
+    List<Map<String, Object>> out = new ArrayList<>(target);
+    int i = 0;
+    int j = 0;
+    while (out.size() < target && (i < jiebaoList.size() || j < namiList.size())) {
+      if (i < jiebaoList.size()) out.add(jiebaoList.get(i++));
+      if (out.size() < target && j < namiList.size()) out.add(namiList.get(j++));
+    }
+    out.sort(
+        Comparator.<Map<String, Object>, String>comparing(r -> str(r.get("match_time")))
+            .thenComparingDouble(
+                r -> -Optional.ofNullable(toDouble(r.get("rate"))).orElse(0D)));
+    return out;
+  }
+
+  private Map<String, Object> toSyntheticUpcomingRec(Map<String, Object> pred) {
+    if (pred == null || pred.isEmpty()) return null;
+    String matchId = str(pred.get("match_id"));
+    if (matchId.isEmpty()) return null;
+    String platform = str(pred.get("model_platform"));
+    String model = "antscore".equalsIgnoreCase(platform) ? "nami" : "jiebao";
+
+    List<String> coveredMarkets = new ArrayList<>(3);
+    if (!str(pred.get("euro_direction")).isBlank()) coveredMarkets.add("欧赔");
+    if (!str(pred.get("ou_direction")).isBlank()) coveredMarkets.add("大小球");
+    if (!str(pred.get("asia_direction")).isBlank()) coveredMarkets.add("亚盘");
+
+    CandidateMarket chosen = chooseBestUpcomingMarket(pred);
+    if (chosen == null) return null;
+    if (!coveredMarkets.contains(chosen.market)) {
+      coveredMarkets.add(chosen.market);
+    }
+
+    double ev = chosen.prob * chosen.decOdds - 1.0;
+    double probPart = Math.max(0.0, Math.min(0.35, chosen.prob - 0.45)) * 36.0;
+    double evPart = Math.max(-0.05, Math.min(0.25, ev)) * 28.0;
+    double rate = Math.round(Math.max(76.0, Math.min(96.8, 78.0 + probPart + evPart)) * 100.0) / 100.0;
+
+    Map<String, Object> row = new LinkedHashMap<>();
+    row.put("id", "pm_" + model + "_" + matchId);
+    row.put("model", model);
+    row.put("sport", "football");
+    row.put("match_id", matchId);
+    row.put("league_name", pred.get("league_name"));
+    row.put("match_time", pred.get("match_time"));
+    row.put("home_team", pred.get("home_team"));
+    row.put("guest_team", pred.get("away_team"));
+    row.put("stage", blankDefault(str(pred.get("snapshot_stage")), "赛前"));
+    row.put("market", chosen.market);
+    row.put("direction", chosen.direction);
+    row.put("handicap", chosen.handicap);
+    row.put("display_handicap", chosen.handicap);
+    row.put("odds", chosen.displayOdds);
+    row.put("rate", rate);
+    row.put("recommend_role", "primary");
+    row.put("result_status", 0);
+    row.put("is_latest", 1);
+    row.put("score_home", pred.get("score_home"));
+    row.put("score_away", pred.get("score_away"));
+    row.put("coveredMarkets", coveredMarkets);
+    row.put("hasMultiMarkets", coveredMarkets.size() >= 2);
+    row.put("hasPoissonScore", pred.get("score_home") != null && pred.get("score_away") != null);
+    return row;
+  }
+
+  private CandidateMarket chooseBestUpcomingMarket(Map<String, Object> pred) {
+    List<CandidateMarket> all = new ArrayList<>(4);
+    addCandidate(
+        all,
+        "亚盘",
+        str(pred.get("asia_direction")),
+        toDouble(pred.get("asia_line")),
+        toDouble(pred.get("asia_odds")),
+        toDouble(pred.get("asia_prob")),
+        true);
+    addCandidate(
+        all,
+        "大小球",
+        str(pred.get("ou_direction")),
+        toDouble(pred.get("ou_line")),
+        toDouble(pred.get("ou_odds")),
+        toDouble(pred.get("ou_prob")),
+        true);
+    addCandidate(
+        all,
+        "欧赔",
+        str(pred.get("euro_direction")),
+        null,
+        toDouble(pred.get("euro_odds")),
+        toDouble(pred.get("euro_prob")),
+        false);
+
+    CandidateMarket best =
+        all.stream()
+            .filter(CandidateMarket::isTradeable)
+            .max(Comparator.comparingDouble(CandidateMarket::score))
+            .orElse(null);
+    if (best != null) return best;
+
+    String pickMarket = str(pred.get("pick_market"));
+    if ("让分".equals(pickMarket)) pickMarket = "亚盘";
+    String pickDir = str(pred.get("pick_direction"));
+    if (!pickDir.isBlank()) {
+      boolean hk = "亚盘".equals(pickMarket) || "大小球".equals(pickMarket);
+      Double rawOdds = toDouble(pred.get("pick_odds"));
+      double decOdds =
+          rawOdds == null || rawOdds <= 0
+              ? 1.90
+              : (hk && rawOdds < 1.35 ? 1.0 + rawOdds : rawOdds);
+      double displayOdds = rawOdds == null || rawOdds <= 0 ? 0.90 : rawOdds;
+      double prob = 0.56;
+      if ("欧赔".equals(pickMarket) && toDouble(pred.get("euro_prob")) != null) {
+        prob = toDouble(pred.get("euro_prob"));
+      } else if ("大小球".equals(pickMarket) && toDouble(pred.get("ou_prob")) != null) {
+        prob = toDouble(pred.get("ou_prob"));
+      } else if ("亚盘".equals(pickMarket) && toDouble(pred.get("asia_prob")) != null) {
+        prob = toDouble(pred.get("asia_prob"));
+      }
+      return new CandidateMarket(
+          blankDefault(pickMarket, "欧赔"),
+          pickDir,
+          toDouble(pred.get("pick_handicap")),
+          displayOdds,
+          decOdds,
+          prob);
+    }
+
+    return all.stream().max(Comparator.comparingDouble(CandidateMarket::score)).orElse(null);
+  }
+
+  private void addCandidate(
+      List<CandidateMarket> list,
+      String market,
+      String direction,
+      Double handicap,
+      Double rawOdds,
+      Double prob,
+      boolean hkOdds) {
+    if (direction == null || direction.isBlank() || rawOdds == null || rawOdds <= 0 || prob == null) {
+      return;
+    }
+    if ("亚盘".equals(market) && handicap != null && Math.abs(handicap) > 2.25) {
+      return;
+    }
+    double decOdds = hkOdds && rawOdds < 1.35 ? 1.0 + rawOdds : rawOdds;
+    list.add(new CandidateMarket(market, direction, handicap, rawOdds, decOdds, prob));
+  }
+
+  private boolean matchesUpcomingFilters(
+      Map<String, Object> row, String market, Double minRate, Double maxRate, String keyword) {
+    if (market != null && !market.isEmpty()) {
+      String rowMarket = str(row.get("market"));
+      if (!rowMarket.equals(market)) {
+        return false;
+      }
+    }
+    double rate = Optional.ofNullable(toDouble(row.get("rate"))).orElse(0D);
+    if (minRate != null && rate < minRate) return false;
+    if (maxRate != null && rate > maxRate) return false;
+    if (keyword != null && !keyword.isEmpty()) {
+      String hay =
+          (str(row.get("id"))
+                  + " "
+                  + str(row.get("match_id"))
+                  + " "
+                  + str(row.get("league_name"))
+                  + " "
+                  + str(row.get("home_team"))
+                  + " "
+                  + str(row.get("guest_team")))
+              .toLowerCase(Locale.ROOT);
+      if (!hay.contains(keyword)) return false;
+    }
+    return true;
+  }
+
+  private boolean isUnlockedForRow(Set<String> unlockedIds, Map<String, Object> row) {
+    if (unlockedIds == null || unlockedIds.isEmpty() || row == null) return false;
+    String id = recId(row);
+    if (!id.isEmpty() && unlockedIds.contains(id)) return true;
+    String matchId = str(row.get("match_id"));
+    if (matchId.isEmpty()) return false;
+    String model = normalizeModel(str(row.get("model")));
+    return unlockedIds.contains("pm_" + model + "_" + matchId);
+  }
+
+  private String modelMatchKey(Map<String, Object> row) {
+    return normalizeModel(str(row.get("model"))) + "|" + str(row.get("match_id"));
+  }
+
+  private boolean isFutureMatchTime(String matchTime) {
+    if (matchTime == null || matchTime.isBlank()) return false;
+    try {
+      LocalDateTime dt = LocalDateTime.parse(matchTime.trim(), MATCH_TIME_FMT);
+      return dt.isAfter(LocalDateTime.now(SHANGHAI_ZONE));
+    } catch (Exception ignored) {
+      return false;
+    }
+  }
+
+  private static class CandidateMarket {
+    final String market;
+    final String direction;
+    final Double handicap;
+    final double displayOdds;
+    final double decOdds;
+    final double prob;
+
+    CandidateMarket(
+        String market,
+        String direction,
+        Double handicap,
+        double displayOdds,
+        double decOdds,
+        double prob) {
+      this.market = market;
+      this.direction = direction;
+      this.handicap = handicap;
+      this.displayOdds = displayOdds;
+      this.decOdds = decOdds;
+      this.prob = prob;
+    }
+
+    boolean isTradeable() {
+      return decOdds >= 1.32 && decOdds <= 4.20 && prob >= 0.42;
+    }
+
+    double score() {
+      double ev = prob * decOdds - 1.0;
+      return prob * 0.65 + Math.max(-0.15, Math.min(0.30, ev)) * 1.4;
+    }
   }
 
   // ---------------------------------------------------------
@@ -373,7 +841,7 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
 
     Double min = toDouble(q.get("min_rate"));
     if (min == null && !admin) {
-      min = properties.getDefaultMinRate();
+      min = 80.0;
     }
 
     db.put("minRate", min);
@@ -414,27 +882,68 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
       throw new ServiceException("recommendationId不能为空");
     }
 
-    final Long id;
+    Matcher syntheticMatcher = SYNTHETIC_REC_ID.matcher(idText);
+    Map<String, Object> row = null;
+    Map<String, Object> preloadedPred = null;
+    Long id = null;
 
-    try {
-      id = Long.valueOf(idText);
-    } catch (Exception e) {
-      throw new ServiceException("recommendationId格式错误");
+    if (syntheticMatcher.matches()) {
+      String targetModel = normalizeModel(syntheticMatcher.group(1));
+      String targetMatchId = syntheticMatcher.group(2);
+      List<Map<String, Object>> candidates =
+          recommendationMapper.selectMatchCandidates(targetMatchId, targetModel);
+      if (candidates != null && !candidates.isEmpty()) {
+        row = applyOverride(candidates.get(0));
+        decorateAndScript(row);
+        decorateResult(row);
+        try {
+          id = Long.valueOf(recId(row));
+        } catch (Exception ignored) {
+          id = null;
+        }
+      } else {
+        try {
+          preloadedPred =
+              recommendationMapper.selectReplayPrediction(
+                  TianwenPredictionView.platformOf(targetModel), targetMatchId);
+        } catch (DataAccessException ignored) {
+          preloadedPred = null;
+        }
+        if (preloadedPred == null || preloadedPred.isEmpty()) {
+          throw new ServiceException("推荐不存在");
+        }
+        row = toSyntheticUpcomingRec(preloadedPred);
+        if (row == null) {
+          throw new ServiceException("推荐不存在");
+        }
+        decorateAndScript(row);
+        decorateResult(row);
+      }
+    } else {
+      try {
+        id = Long.valueOf(idText);
+      } catch (Exception e) {
+        throw new ServiceException("recommendationId格式错误");
+      }
+
+      // 1. 当前推荐
+      row = recommendationMapper.selectById(id);
+
+      if (row == null) {
+        throw new ServiceException("推荐不存在");
+      }
+
+      row = applyOverride(row);
+      decorateAndScript(row);
+      decorateResult(row);
     }
 
-    // 1. 当前推荐
-    Map<String, Object> row = recommendationMapper.selectById(id);
-
-    if (row == null) {
-      throw new ServiceException("推荐不存在");
+    // 2. 当前推荐是否已经单独解锁（同时兼容数字ID与合成赛前ID）
+    boolean manuallyUnlocked = false;
+    if (user != null) {
+      Set<String> unlockedIds = new HashSet<>(unlockMapper.selectUnlockedIds(user.getId()));
+      manuallyUnlocked = unlockedIds.contains(idText) || isUnlockedForRow(unlockedIds, row);
     }
-
-    row = applyOverride(row);
-    decorateAndScript(row);
-    decorateResult(row);
-
-    // 2. 当前推荐是否已经单独解锁
-    boolean manuallyUnlocked = user != null && unlockMapper.selectOne(user.getId(), idText) != null;
 
     // 3. 使用V17统一VIP权限
     Map<String, Object> current = mask(row, user, manuallyUnlocked);
@@ -444,7 +953,7 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
 
     List<Map<String, Object>> history = new ArrayList<>();
 
-    if (!matchId.isEmpty()) {
+    if (!matchId.isEmpty() && id != null) {
 
       List<Map<String, Object>> historyRows =
           recommendationMapper.selectMatchHistory(matchId, id, 20);
@@ -467,8 +976,7 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
                 .peek(this::decorateResult)
                 .map(
                     item -> {
-                      String historyId = recId(item);
-                      boolean unlocked = unlockedSet.contains(historyId);
+                      boolean unlocked = isUnlockedForRow(unlockedSet, item);
                       Map<String, Object> masked = mask(item, user, unlocked);
                       decorateHistoryChange(masked, finalRow);
                       return masked;
@@ -481,13 +989,19 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
     Map<String, Object> match = buildMatchSummary(row);
     Map<String, Object> out = new LinkedHashMap<>();
 
+    boolean canView = Boolean.TRUE.equals(current.get("canView"));
+    Map<String, Object> predView =
+        preloadedPred != null
+            ? TianwenPredictionView.fromRow(preloadedPred, canView)
+            : predictionFor(row, canView);
+
     out.put("code", 200);
     out.put("item", current);
     out.put("history", history);
     out.put("historyCount", history.size());
     out.put("match", match);
     out.put("auth", auth(user, normalizeModel(str(row.get("model")))));
-    out.put("prediction", predictionFor(row, Boolean.TRUE.equals(current.get("canView"))));
+    out.put("prediction", predView);
 
     return out;
   }
@@ -922,7 +1436,19 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
       return Set.of();
     }
     List<String> unlocked = unlockMapper.selectUnlockedMatchIds(user.getId(), matchIds);
-    return unlocked == null ? Set.of() : new HashSet<>(unlocked);
+    Set<String> result = unlocked == null ? new HashSet<>() : new HashSet<>(unlocked);
+    List<String> unlockedIds = unlockMapper.selectUnlockedIds(user.getId());
+    if (unlockedIds != null) {
+      Set<String> targetSet = new HashSet<>(matchIds);
+      for (String uid : unlockedIds) {
+        if (uid == null) continue;
+        Matcher m = SYNTHETIC_REC_ID.matcher(uid.trim());
+        if (m.matches() && targetSet.contains(m.group(2))) {
+          result.add(m.group(2));
+        }
+      }
+    }
+    return result;
   }
 
   private LocalDate predictionDay(String date) {
@@ -1285,6 +1811,17 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
       totalGoal = direction.contains("大") ? line + 0.25 : Math.max(0.5, line - 0.25);
     }
     List<String> scores = scoreRange(direction, totalGoal, line);
+    if (row.get("score_home") != null && row.get("score_away") != null) {
+      String poissonScore = str(row.get("score_home")) + "-" + str(row.get("score_away"));
+      List<String> mergedScores = new ArrayList<>(3);
+      mergedScores.add(poissonScore);
+      for (String s : scores) {
+        if (!poissonScore.equals(s) && mergedScores.size() < 3) {
+          mergedScores.add(s);
+        }
+      }
+      scores = mergedScores;
+    }
     Map<String, Object> script = new LinkedHashMap<>();
     script.put("winner", winner);
     script.put("goal_bias", goalBias);
@@ -1402,7 +1939,14 @@ public class TianwenRecommendationServiceImpl implements ITianwenRecommendationS
       throw new ServiceException("推荐权限核验异常，请稍后重试");
     }
 
-    m.put("access", access.toMap());
+    boolean upcoming =
+        "0".equals(str(m.getOrDefault("result_status", "0")))
+            && isFutureMatchTime(str(m.get("match_time")));
+    m.put("isUpcoming", upcoming);
+    Map<String, Object> accessMap = access.toMap();
+    m.put("requiredVipName", accessMap.get("requiredVipName"));
+
+    m.put("access", accessMap);
     m.put("locked", !access.isAllowed());
     m.put("canView", access.isAllowed());
     m.put("accessType", access.getAccessType());

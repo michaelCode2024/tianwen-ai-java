@@ -349,9 +349,7 @@ public class TianwenUserServiceImpl implements ITianwenUserService {
             throw new ServiceException("recommendationId不能为空");
         }
 
-        try {
-            Long.parseLong(recId);
-        } catch (Exception e) {
+        if (!recId.matches("^(\\d+|pm_(jiebao|nami)_[A-Za-z0-9_-]{1,48})$")) {
             throw new ServiceException("recommendationId格式错误");
         }
 

@@ -51,8 +51,8 @@ public class TianwenH5Controller {
    */
   @GetMapping("/home/bootstrap")
   public Map<String, Object> homeBootstrap(
-      @RequestParam(defaultValue = "90") Double minRate,
-      @RequestParam(defaultValue = "24") Integer limit,
+      @RequestParam(defaultValue = "80") Double minRate,
+      @RequestParam(defaultValue = "30") Integer limit,
       HttpServletRequest request) {
 
     long start = System.currentTimeMillis();
@@ -61,8 +61,8 @@ public class TianwenH5Controller {
     TianwenH5User user = userService.currentUser(token);
 
     Map<String, String> q = new LinkedHashMap<>();
-    q.put("min_rate", String.valueOf(minRate == null ? 90D : minRate));
-    q.put("limit", String.valueOf(limit == null ? 24 : Math.min(Math.max(limit, 1), 50)));
+    q.put("min_rate", String.valueOf(minRate == null ? 80D : minRate));
+    q.put("limit", String.valueOf(limit == null ? 30 : Math.min(Math.max(limit, 1), 60)));
 
     Map<String, Object> rec = recommendationService.homeLatest(q, user);
 
@@ -74,6 +74,8 @@ public class TianwenH5Controller {
     // 用户进入“我的/签到”页面时再调用 /me。
     out.put("items", rec.get("items"));
     out.put("count", rec.get("count"));
+    out.put("upcomingCount", rec.get("upcomingCount"));
+    out.put("hitCount", rec.get("hitCount"));
     out.put("auth", rec.get("auth"));
     out.put("source", rec.get("source"));
     out.put("costMs", System.currentTimeMillis() - start);
